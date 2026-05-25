@@ -8,8 +8,10 @@ async function get_weather(params) {
         }
         var c = data.current_condition[0];
         var desc = c.weatherDesc && c.weatherDesc[0] ? c.weatherDesc[0].value : "未知";
+        var cityName = data.nearest_area && data.nearest_area[0] ? data.nearest_area[0].areaName[0].value : city;
         return {
-            success.nearest_area && data.nearest_area[0] ? data.nearest_area[0].areaName[0].value : city,
+            success: true,
+            city: cityName,
             temperature: c.temp_C + "°C",
             feelsLike: c.FeelsLikeC + "°C",
             weather: desc,
