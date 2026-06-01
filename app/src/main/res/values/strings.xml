@@ -1026,6 +1026,7 @@
   <string name="text_area_import_success">File imported successfully</string>
   <string name="text_area_save">Save</string>
   <string name="theme_name_autumn">Autumn Yellow</string>
+  <string name="theme_name_claude">Claude</string>
   <string name="theme_name_black">Neutral Black</string>
   <string name="theme_name_ocean">Ocean Blue</string>
   <string name="theme_name_sakura">Sakura Pink</string>
