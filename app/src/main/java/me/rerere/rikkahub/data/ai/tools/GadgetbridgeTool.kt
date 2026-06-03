@@ -93,43 +93,11 @@ fun createGadgetbridgeTool(customPath: String = ""): Tool = Tool(
                     }.toString()
                 }
                 "sleep" -> {
-                    val sleepSummaries = GadgetbridgeReader.readSleepSummaries(7, customPath)
-                    val latestSleep = sleepSummaries.firstOrNull()
-                    val stages = if (latestSleep != null) {
-                        GadgetbridgeReader.readLastNightSleepStages(latestSleep.timestamp, latestSleep.wakeupTime, customPath)
-                    } else emptyList()
-                    // Calculate real duration based on timestamps instead of sample count
-                    val durationByStage = mutableMapOf<Int, Long>()
-                    for (i in stages.indices) {
-                        val stageDuration = if (i < stages.size - 1) {
-                            (stages[i + 1].timestamp - stages[i].timestamp) / 60_000
-                        } else 1L // last record: estimate 1 minute
-                        durationByStage[stages[i].stage] = (durationByStage[stages[i].stage] ?: 0L) + stageDuration
-                    }
-                    val totalMinutes = durationByStage.values.sum()
-                    val sdf = SimpleDateFormat("M/d HH:mm", Locale.getDefault())
+                    val sleepSummaries = GadgetbridgeReader.readSleepSummaries(3, customPath)
                     buildJsonObject {
                         put("success", true)
                         put("data_type", "sleep")
-                        if (latestSleep != null) {
-                            put("sleep_start", sdf.format(Date(latestSleep.timestamp)))
-                            put("sleep_end", sdf.format(Date(latestSleep.wakeupTime)))
-                            val totalDurationMin = (latestSleep.wakeupTime - latestSleep.timestamp) / 60_000
-                            put("duration_text", "${totalDurationMin / 60}h ${totalDurationMin % 60}min")
-                        }
-                        put("total_minutes", totalMinutes)
-                        put("light_sleep_minutes", durationByStage[2] ?: 0L)
-                        put("deep_sleep_minutes", durationByStage[3] ?: 0L)
-                        put("rem_sleep_minutes", durationByStage[4] ?: 0L)
-                        put("stages", kotlinx.serialization.json.buildJsonArray {
-                            stages.forEach { stage ->
-                                add(buildJsonObject {
-                                    put("timestamp", stage.timestamp)
-                                    put("stage", stage.stage)
-                                    put("stage_name", stage.stageName)
-                                })
-                            }
-                        })
+                        put("recent_sleep_list", buildSleepSessionList(sleepSummaries))
                     }.toString()
                 }
                 "daily_summary" -> {
@@ -158,22 +126,9 @@ fun createGadgetbridgeTool(customPath: String = ""): Tool = Tool(
                     // "all" - return combined data
                     val latest = GadgetbridgeReader.readLatestActivitySample(customPath)
                     val summaries = GadgetbridgeReader.readDailySummaries(7, customPath)
-                    val sleepSummariesForStages = GadgetbridgeReader.readSleepSummaries(7, customPath)
-                    val latestSleepForStages = sleepSummariesForStages.firstOrNull()
-                    val sleepStages = if (latestSleepForStages != null) {
-                        GadgetbridgeReader.readLastNightSleepStages(latestSleepForStages.timestamp, latestSleepForStages.wakeupTime, customPath)
-                    } else emptyList()
+                    val sleepSummaries = GadgetbridgeReader.readSleepSummaries(3, customPath)
                     val (spo2, stress) = GadgetbridgeReader.readLatestSpo2AndStress(customPath)
                     val today = summaries.lastOrNull()
-                    // Sleep - calculate real duration based on timestamps
-                    val sleepDurationByStage = mutableMapOf<Int, Long>()
-                    for (i in sleepStages.indices) {
-                        val stageDuration = if (i < sleepStages.size - 1) {
-                            (sleepStages[i + 1].timestamp - sleepStages[i].timestamp) / 60_000
-                        } else 1L
-                        sleepDurationByStage[sleepStages[i].stage] = (sleepDurationByStage[sleepStages[i].stage] ?: 0L) + stageDuration
-                    }
-                    val allSdf = SimpleDateFormat("M/d HH:mm", Locale.getDefault())
                     buildJsonObject {
                         put("success", true)
                         put("data_type", "all")
@@ -184,17 +139,8 @@ fun createGadgetbridgeTool(customPath: String = ""): Tool = Tool(
                         // Today's summary
                         put("today_steps", today?.steps ?: 0)
                         put("today_calories", today?.calories ?: 0)
-                        // Sleep
-                        if (latestSleepForStages != null) {
-                            put("sleep_start", allSdf.format(Date(latestSleepForStages.timestamp)))
-                            put("sleep_end", allSdf.format(Date(latestSleepForStages.wakeupTime)))
-                            val totalSleepMin = (latestSleepForStages.wakeupTime - latestSleepForStages.timestamp) / 60_000
-                            put("duration_text", "${totalSleepMin / 60}h ${totalSleepMin % 60}min")
-                        }
-                        put("sleep_total_minutes", sleepDurationByStage.values.sum())
-                        put("sleep_light_minutes", sleepDurationByStage[2] ?: 0L)
-                        put("sleep_deep_minutes", sleepDurationByStage[3] ?: 0L)
-                        put("sleep_rem_minutes", sleepDurationByStage[4] ?: 0L)
+                        // Sleep data
+                        put("recent_sleep_list", buildSleepSessionList(sleepSummaries))
                         // Weekly summaries
                         put("weekly_summaries", kotlinx.serialization.json.buildJsonArray {
                             summaries.forEach { s ->
@@ -225,3 +171,32 @@ fun createGadgetbridgeTool(customPath: String = ""): Tool = Tool(
         }
     }
 )
+
+/**
+ * 将睡眠摘要列表构建为 JSON 数组。
+ * 每条包含：type（"nap" 或 "sleep"）、start、end、total_minutes、duration_text，
+ * 非小憩额外加 deep_sleep_minutes、light_sleep_minutes、rem_sleep_minutes。
+ */
+private fun buildSleepSessionList(
+    sleepSummaries: List<me.rerere.rikkahub.data.gadgetbridge.SleepSummary>,
+): kotlinx.serialization.json.JsonArray {
+    val sdf = SimpleDateFormat("M/d HH:mm", Locale.getDefault())
+    return kotlinx.serialization.json.buildJsonArray {
+        sleepSummaries.forEach { summary ->
+            add(buildJsonObject {
+                put("type", if (summary.isNap) "nap" else "sleep")
+                put("start", sdf.format(Date(summary.timestamp)))
+                put("end", sdf.format(Date(summary.wakeupTime)))
+                put("total_minutes", summary.totalDuration)
+                val hours = summary.totalDuration / 60
+                val mins = summary.totalDuration % 60
+                put("duration_text", "${hours}h ${mins}min")
+                if (!summary.isNap) {
+                    put("deep_sleep_minutes", summary.deepSleep)
+                    put("light_sleep_minutes", summary.lightSleep)
+                    put("rem_sleep_minutes", summary.remSleep)
+                }
+            })
+        }
+    }
+}

@@ -25,19 +25,6 @@ data class ActivitySample(
     val rawIntensity: Int?,
 )
 
-data class SleepStage(
-    val timestamp: Long,
-    val stage: Int,
-) {
-    val stageName: String
-        get() = when (stage) {
-            2 -> "浅睡"
-            3 -> "深睡"
-            4 -> "REM"
-            else -> "未知"
-        }
-}
-
 data class SleepSummary(
     val timestamp: Long,      // 入睡时间（毫秒时间戳）
     val wakeupTime: Long,     // 醒来时间（毫秒时间戳）
@@ -58,7 +45,6 @@ data class HealthUiState(
     val currentHeartRate: Int? = null,
     val dailySummaries7: List<DailySummary> = emptyList(),
     val dailySummaries30: List<DailySummary> = emptyList(),
-    val lastNightSleepStages: List<SleepStage> = emptyList(),
     val sleepSummaries: List<SleepSummary> = emptyList(),
     val latestSpo2: Int? = null,
     val latestStress: Int? = null,

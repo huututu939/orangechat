@@ -183,43 +183,6 @@ val cursor = db.query("XIAOMI_ACTIVITY_SAMPLE", arrayOf("TIMESTAMP", "HEART_RATE
         }.getOrDefault(emptyList())
     }
 
-    fun readLastNightSleepStages(sleepStart: Long, sleepEnd: Long, customPath: String = ""): List<SleepStage> {
-        return withDatabase(customPath) { db ->
-            val stages = mutableListOf<SleepStage>()
-            // 先按原值查
-            var cursor = db.query(
-                "XIAOMI_SLEEP_STAGE_SAMPLE",
-                arrayOf("TIMESTAMP", "STAGE"),
-                "TIMESTAMP >= ? AND TIMESTAMP <= ? AND STAGE IS NOT NULL",
-                arrayOf(sleepStart.toString(), sleepEnd.toString()),
-                null, null, "TIMESTAMP ASC"
-            )
-            cursor.use {
-                while (it.moveToNext()) {
-                    stages.add(SleepStage(it.getLong(0), it.getInt(1)))
-                }
-            }
-            if (stages.isEmpty()) {
-                // 可能单位不同，用秒试一次
-                val startSec = sleepStart / 1000
-                val endSec = sleepEnd / 1000
-                cursor = db.query(
-                    "XIAOMI_SLEEP_STAGE_SAMPLE",
-                    arrayOf("TIMESTAMP", "STAGE"),
-                    "TIMESTAMP >= ? AND TIMESTAMP <= ? AND STAGE IS NOT NULL",
-                    arrayOf(startSec.toString(), endSec.toString()),
-                    null, null, "TIMESTAMP ASC"
-                )
-                cursor.use {
-                    while (it.moveToNext()) {
-                        stages.add(SleepStage(it.getLong(0), it.getInt(1)))
-                    }
-                }
-            }
-            stages
-        }.getOrDefault(emptyList())
-    }
-
     fun readLatestSpo2AndStress(customPath: String = ""): Pair<Int?, Int?> {
         return withDatabase(customPath) { db ->
             val startSec = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().epochSecond
