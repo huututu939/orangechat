@@ -1,5 +1,5 @@
 package me.rerere.rikkahub.plugin.loader
-
+ 
 import android.content.Context
 import android.util.Log
 import com.whl.quickjs.wrapper.JSCallFunction
@@ -15,12 +15,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.plugin.data.PluginDataStore
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
-
+ 
 /**
  * 插件沙箱
  * 使用QuickJS在隔离环境中执行插件代码
@@ -28,293 +29,289 @@ import java.util.concurrent.TimeUnit
 class PluginSandbox(
     private val context: Context,
     private val okHttpClient: OkHttpClient,
-    private var memoryBankService: MemoryBankService? = null
+    private var memoryBankService: MemoryBankService? = null,
+    private val dataStore: PluginDataStore? = null
 ) {
+ 
     companion object {
         private const val TAG = "PluginSandbox"
     }
-
+ 
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
     }
-
+ 
     // QuickJS上下文
     private var quickJSContext: QuickJSContext? = null
-    
+ 
     // 导出的函数名称列表
     private val exportedFunctionNames = mutableSetOf<String>()
-
+ 
     /**
      * 初始化沙箱
      */
     fun initialize() {
         if (quickJSContext != null) return
-        
+ 
         Log.d(TAG, "Initializing QuickJS sandbox")
-        
         quickJSContext = QuickJSContext.create().apply {
+ 
             // 设置控制台
             setConsole(object : QuickJSContext.Console {
-                override fun log(info: String?) {
-                    Log.d(TAG, "[Plugin] $info")
-                }
-
-                override fun info(info: String?) {
-                    Log.i(TAG, "[Plugin] $info")
-                }
-
-                override fun warn(info: String?) {
-                    Log.w(TAG, "[Plugin] $info")
-                }
-
-                override fun error(info: String?) {
-                    Log.e(TAG, "[Plugin] $info")
-                }
+                override fun log(info: String?) { Log.d(TAG, "[Plugin] $info") }
+                override fun info(info: String?) { Log.i(TAG, "[Plugin] $info") }
+                override fun warn(info: String?) { Log.w(TAG, "[Plugin] $info") }
+                override fun error(info: String?) { Log.e(TAG, "[Plugin] $info") }
             })
-
-            // 注入exports对象和同步fetch函数
+ 
+            // 注入全局对象、polyfill、桥接变量
             evaluate("""
-                // TextEncoder polyfill - UTF-8 encoding
-                function TextEncoder() {}
-                TextEncoder.prototype.encode = function(str) {
-                    str = str || '';
-                    var bytes = [];
-                    for (var i = 0; i < str.length; ) {
-                        var codePoint = str.codePointAt(i);
-                        if (codePoint < 0x80) {
-                            bytes.push(codePoint);
-                        } else if (codePoint < 0x800) {
-                            bytes.push(0xC0 | (codePoint >> 6));
-                            bytes.push(0x80 | (codePoint & 0x3F));
-                        } else if (codePoint < 0x10000) {
-                            bytes.push(0xE0 | (codePoint >> 12));
-                            bytes.push(0x80 | ((codePoint >> 6) & 0x3F));
-                            bytes.push(0x80 | (codePoint & 0x3F));
-                        } else {
-                            bytes.push(0xF0 | (codePoint >> 18));
-                            bytes.push(0x80 | ((codePoint >> 12) & 0x3F));
-                            bytes.push(0x80 | ((codePoint >> 6) & 0x3F));
-                            bytes.push(0x80 | (codePoint & 0x3F));
-                        }
-                        i += codePoint > 0xFFFF ? 2 : 1;
-                    }
-                    return new Uint8Array(bytes);
-                };
-                TextEncoder.prototype.encodeInto = function(str, dest) {
-                    var encoded = this.encode(str);
-                    for (var i = 0; i < encoded.length && i < dest.length; i++) {
-                        dest[i] = encoded[i];
-                    }
-                    return { read: str.length, written: encoded.length };
-                };
-                
-                // TextDecoder polyfill - UTF-8 decoding
-                function TextDecoder(encoding) {
-                    this.encoding = encoding || 'utf-8';
-                    this.fatal = false;
-                    this.ignoreBOM = false;
-                }
-                TextDecoder.prototype.decode = function(input) {
-                    if (!input) return '';
-                    var bytes;
-                    if (input instanceof Uint8Array) {
-                        bytes = input;
-                    } else if (input instanceof ArrayBuffer) {
-                        bytes = new Uint8Array(input);
-                    } else {
-                        return '';
-                    }
-                    var result = '';
-                    var i = 0;
-                    while (i < bytes.length) {
-                        var byte1 = bytes[i++];
-                        if (byte1 < 0x80) {
-                            result += String.fromCodePoint(byte1);
-                        } else if ((byte1 & 0xE0) === 0xC0) {
-                            var byte2 = bytes[i++];
-                            result += String.fromCodePoint(((byte1 & 0x1F) << 6) | (byte2 & 0x3F));
-                        } else if ((byte1 & 0xF0) === 0xE0) {
-                            var byte2 = bytes[i++];
-                            var byte3 = bytes[i++];
-                            result += String.fromCodePoint(((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F));
-                        } else if ((byte1 & 0xF8) === 0xF0) {
-                            var byte2 = bytes[i++];
-                            var byte3 = bytes[i++];
-                            var byte4 = bytes[i++];
-                            result += String.fromCodePoint(((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) | ((byte3 & 0x3F) << 6) | (byte4 & 0x3F));
-                        }
-                    }
-                    return result;
-                };
-
-                // btoa polyfill - standard behavior: binary string → Base64
-                // Input must be a binary string (each char code 0-255)
-                var btoa = function(str) {
-                    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-                    var result = '';
-                    for (var i = 0; i < str.length; i += 3) {
-                        var b1 = str.charCodeAt(i);
-                        var b2 = (i + 1 < str.length) ? str.charCodeAt(i + 1) : 0;
-                        var b3 = (i + 2 < str.length) ? str.charCodeAt(i + 2) : 0;
-                        result += chars[(b1 >> 2) & 0x3F];
-                        result += chars[((b1 << 4) | (b2 >> 4)) & 0x3F];
-                        result += (i + 1 < str.length) ? chars[((b2 << 2) | (b3 >> 6)) & 0x3F] : '=';
-                        result += (i + 2 < str.length) ? chars[b3 & 0x3F] : '=';
-                    }
-                    return result;
-                };
-                
-                // atob polyfill - standard behavior: Base64 → binary string
-                // Returns a binary string where each char code is 0-255 (one byte per char)
-                // To decode UTF-8 text: new TextDecoder().decode(new Uint8Array([...atob(s)].map(c => c.charCodeAt(0))))
-                var atob = function(str) {
-                    str = str.replace(/\s/g, '');
-                    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-                    var result = '';
-                    for (var i = 0; i < str.length; i += 4) {
-                        var c1 = chars.indexOf(str[i]);
-                        var c2 = chars.indexOf(str[i + 1]);
-                        var c3 = chars.indexOf(str[i + 2]);
-                        var c4 = chars.indexOf(str[i + 3]);
-                        result += String.fromCharCode((c1 << 2) | (c2 >> 4));
-                        if (c3 !== -1) result += String.fromCharCode(((c2 << 4) | (c3 >> 2)) & 0xFF);
-                        if (c4 !== -1) result += String.fromCharCode(((c3 << 6) | c4) & 0xFF);
-                    }
-                    return result;
-                };
-
-                var exports = {};
-                
-                // 同步fetch函数 - 由原生代码注入
-                var __nativeFetch = null;
-                
-                // 记忆库桥接函数 - 由原生代码注入
-                var __memoryBankBridge = null;
-                
-                // fetch(url) - 同步HTTP请求，返回类浏览器Response对象
-                // 支持 response.json(), response.text(), response.ok, response.status 等
-                function fetch(url, options) {
-                    if (!__nativeFetch) {
-                        throw new Error("fetch is not available: native fetch not injected");
-                    }
-                    var optsJson = options ? JSON.stringify(options) : "{}";
-                    var resultJson = __nativeFetch(url, optsJson);
-                    var result = JSON.parse(resultJson);
-                    if (!result.success) {
-                        throw new Error(result.error || "fetch failed");
-                    }
-                    // 构建类浏览器 Response 对象
-                    var response = {
-                        ok: result.ok,
-                        status: result.status,
-                        headers: result.headers,
-                        body: result.body,
-                        text: function() { return result.body; },
-                        json: function() { return JSON.parse(result.body); }
-                    };
-                    return response;
-                }
-            """.trimIndent())
-
-            // 注入原生fetch函数 - 通过OkHttp同步执行HTTP请求
-            // 使用 getGlobalObject().setProperty() 将 JSCallFunction 注入到全局对象
+// TextEncoder polyfill - UTF-8 encoding
+function TextEncoder() {}
+TextEncoder.prototype.encode = function(str) {
+    str = str || '';
+    var bytes = [];
+    for (var i = 0; i < str.length; ) {
+        var codePoint = str.codePointAt(i);
+        if (codePoint < 0x80) {
+            bytes.push(codePoint);
+        } else if (codePoint < 0x800) {
+            bytes.push(0xC0 | (codePoint >> 6));
+            bytes.push(0x80 | (codePoint & 0x3F));
+        } else if (codePoint < 0x10000) {
+            bytes.push(0xE0 | (codePoint >> 12));
+            bytes.push(0x80 | ((codePoint >> 6) & 0x3F));
+            bytes.push(0x80 | (codePoint & 0x3F));
+        } else {
+            bytes.push(0xF0 | (codePoint >> 18));
+            bytes.push(0x80 | ((codePoint >> 12) & 0x3F));
+            bytes.push(0x80 | ((codePoint >> 6) & 0x3F));
+            bytes.push(0x80 | (codePoint & 0x3F));
+        }
+        i += codePoint > 0xFFFF ? 2 : 1;
+    }
+    return new Uint8Array(bytes);
+};
+ 
+// TextDecoder polyfill - UTF-8 decoding
+function TextDecoder(encoding) {
+    this.encoding = encoding || 'utf-8';
+    this.fatal = false;
+    this.ignoreBOM = false;
+}
+TextDecoder.prototype.decode = function(input) {
+    if (!input) return '';
+    var bytes;
+    if (input instanceof Uint8Array) {
+        bytes = input;
+    } else if (input instanceof ArrayBuffer) {
+        bytes = new Uint8Array(input);
+    } else {
+        return '';
+    }
+    var result = '';
+    var i = 0;
+    while (i < bytes.length) {
+        var byte1 = bytes[i++];
+        if (byte1 < 0x80) {
+            result += String.fromCodePoint(byte1);
+        } else if ((byte1 & 0xE0) === 0xC0) {
+            var byte2 = bytes[i++];
+            result += String.fromCodePoint(((byte1 & 0x1F) << 6) | (byte2 & 0x3F));
+        } else if ((byte1 & 0xF0) === 0xE0) {
+            var byte2 = bytes[i++];
+            var byte3 = bytes[i++];
+            result += String.fromCodePoint(((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F));
+        } else if ((byte1 & 0xF8) === 0xF0) {
+            var byte2 = bytes[i++];
+            var byte3 = bytes[i++];
+            var byte4 = bytes[i++];
+            result += String.fromCodePoint(((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) | ((byte3 & 0x3F) << 6) | (byte4 & 0x3F));
+        }
+    }
+    return result;
+};
+ 
+// btoa polyfill
+var btoa = function(str) {
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var result = '';
+    for (var i = 0; i < str.length; i += 3) {
+        var b1 = str.charCodeAt(i);
+        var b2 = (i + 1 < str.length) ? str.charCodeAt(i + 1) : 0;
+        var b3 = (i + 2 < str.length) ? str.charCodeAt(i + 2) : 0;
+        result += chars[(b1 >> 2) & 0x3F];
+        result += chars[((b1 << 4) | (b2 >> 4)) & 0x3F];
+        result += (i + 1 < str.length) ? chars[((b2 << 2) | (b3 >> 6)) & 0x3F] : '=';
+        result += (i + 2 < str.length) ? chars[b3 & 0x3F] : '=';
+    }
+    return result;
+};
+ 
+// atob polyfill
+var atob = function(str) {
+    str = str.replace(/\s/g, '');
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var result = '';
+    for (var i = 0; i < str.length; i += 4) {
+        var c1 = chars.indexOf(str[i]);
+        var c2 = chars.indexOf(str[i + 1]);
+        var c3 = chars.indexOf(str[i + 2]);
+        var c4 = chars.indexOf(str[i + 3]);
+        result += String.fromCharCode((c1 << 2) | (c2 >> 4));
+        if (c3 !== -1) result += String.fromCharCode(((c2 << 4) | (c3 >> 2)) & 0xFF);
+        if (c4 !== -1) result += String.fromCharCode(((c3 << 6) | c4) & 0xFF);
+    }
+    return result;
+};
+ 
+var exports = {};
+ 
+// 原生桥接变量（由 Android 注入）
+var __nativeFetch = null;
+var __memoryBankBridge = null;
+var __dataStoreBridge = null;
+ 
+// dataStore 桥接对象 - 插件可直接调用
+var dataStore = {
+    set: function(key, value) {
+        if (!__dataStoreBridge) throw new Error('dataStore bridge not available');
+        var r = JSON.parse(__dataStoreBridge('set', JSON.stringify({key: key, value: value})));
+        if (!r.success) throw new Error(r.error || 'dataStore.set failed: ' + key);
+        return true;
+    },
+    get: function(key) {
+        if (!__dataStoreBridge) return null;
+        var r = JSON.parse(__dataStoreBridge('get', JSON.stringify({key: key})));
+        if (!r.success) return null;
+        return r.value;
+    },
+    del: function(key) {
+        if (!__dataStoreBridge) return false;
+        var r = JSON.parse(__dataStoreBridge('delete', JSON.stringify({key: key})));
+        return r.success === true;
+    },
+    list: function(prefix) {
+        if (!__dataStoreBridge) return [];
+        var r = JSON.parse(__dataStoreBridge('list', JSON.stringify({prefix: prefix || ''})));
+        if (!r.success) return [];
+        return r.keys || [];
+    }
+};
+ 
+// fetch 同步包装
+function fetch(url, options) {
+    if (!__nativeFetch) {
+        throw new Error('fetch is not available: native fetch not injected');
+    }
+    var optsJson = options ? JSON.stringify(options) : '{}';
+    var resultJson = __nativeFetch(url, optsJson);
+    var result = JSON.parse(resultJson);
+    if (!result.success) {
+        throw new Error(result.error || 'fetch failed');
+    }
+    return {
+        ok: result.ok,
+        status: result.status,
+        headers: result.headers,
+        body: result.body,
+        text: function() { return result.body; },
+        json: function() { return JSON.parse(result.body); }
+    };
+}
+""".trimIndent())
+ 
+            // 注入原生 fetch
             getGlobalObject().setProperty("__nativeFetch", JSCallFunction { args ->
                 val url = args[0] as? String ?: ""
                 val optionsJson = args[1] as? String ?: "{}"
                 try {
                     nativeFetch(url, optionsJson)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Native fetch error", e)
+                    Log.e(TAG, "Native fetch error: url=$url", e)
                     """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
                 }
             })
-
-            // 注入记忆库桥接函数
+ 
+            // 注入记忆库桥接
             getGlobalObject().setProperty("__memoryBankBridge", JSCallFunction { args ->
                 val action = args[0] as? String ?: ""
                 val paramsJson = args[1] as? String ?: "{}"
                 try {
                     nativeMemoryBankBridge(action, paramsJson)
                 } catch (e: Exception) {
-                    Log.e(TAG, "MemoryBank bridge error", e)
+                    Log.e(TAG, "MemoryBank bridge error: action=$action", e)
+                    """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
+                }
+            })
+ 
+            // 注入 PluginDataStore 桥接
+            getGlobalObject().setProperty("__dataStoreBridge", JSCallFunction { args ->
+                val action = args[0] as? String ?: ""
+                val paramsJson = args[1] as? String ?: "{}"
+                try {
+                    nativeDataStoreBridge(action, paramsJson)
+                } catch (e: Exception) {
+                    Log.e(TAG, "DataStore bridge error: action=$action, params=$paramsJson", e)
                     """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
                 }
             })
         }
-        
-        Log.d(TAG, "QuickJS sandbox initialized with fetch support")
+ 
+        Log.d(TAG, "QuickJS sandbox initialized")
     }
-
+ 
     /**
-     * 使用OkHttp执行同步HTTP请求
-     * 在JS线程中调用，会阻塞直到请求完成
+     * 使用 OkHttp 执行同步 HTTP 请求
      */
     private fun nativeFetch(url: String, optionsJson: String): String {
         Log.d(TAG, "nativeFetch: $url")
-        
         return try {
             val options = json.parseToJsonElement(optionsJson) as? JsonObject ?: JsonObject(emptyMap())
-            
             val method = (options["method"] as? JsonPrimitive)?.contentOrNull?.uppercase() ?: "GET"
             val headers = options["headers"] as? JsonObject
             val body = options["body"] as? JsonPrimitive
-            
+ 
             val requestBuilder = Request.Builder().url(url)
-            
-            // 设置请求头
+ 
             headers?.forEach { (key, value) ->
                 val headerValue = (value as? JsonPrimitive)?.contentOrNull ?: return@forEach
                 requestBuilder.addHeader(key, headerValue)
             }
-            
-            // 设置请求方法和请求体
+ 
             when (method) {
                 "GET" -> requestBuilder.get()
                 "POST" -> {
-                    val requestBody = okhttp3.RequestBody.create(
-                        null,
-                        body?.contentOrNull ?: ""
-                    )
+                    val requestBody = okhttp3.RequestBody.create(null, body?.contentOrNull ?: "")
                     requestBuilder.post(requestBody)
                 }
                 "PUT" -> {
-                    val requestBody = okhttp3.RequestBody.create(
-                        null,
-                        body?.contentOrNull ?: ""
-                    )
+                    val requestBody = okhttp3.RequestBody.create(null, body?.contentOrNull ?: "")
                     requestBuilder.put(requestBody)
                 }
                 "DELETE" -> {
-                    val requestBody = body?.contentOrNull?.let {
-                        okhttp3.RequestBody.create(null, it)
-                    }
-                    if (requestBody != null) {
-                        requestBuilder.delete(requestBody)
-                    } else {
-                        requestBuilder.delete()
-                    }
+                    val requestBody = body?.contentOrNull?.let { okhttp3.RequestBody.create(null, it) }
+                    if (requestBody != null) requestBuilder.delete(requestBody) else requestBuilder.delete()
                 }
                 else -> requestBuilder.get()
             }
-            
-            // 使用独立的OkHttpClient，设置较短超时
+ 
             val fetchClient = okHttpClient.newBuilder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
                 .build()
-            
+ 
             val response = fetchClient.newCall(requestBuilder.build()).execute()
             val responseBody = response.body?.string() ?: ""
             val statusCode = response.code
             val responseHeaders = response.headers
-            
-            // 构建响应头JSON
+ 
             val headersJson = responseHeaders.names().associateWith { name ->
                 responseHeaders.values(name).joinToString(", ")
             }
-            
+ 
             val result = buildString {
                 append("{\"success\":true,")
                 append("\"status\":$statusCode,")
@@ -323,54 +320,98 @@ class PluginSandbox(
                 append("\"body\":${json.encodeToString(JsonPrimitive(responseBody))}")
                 append("}")
             }
-            
             Log.d(TAG, "nativeFetch response: status=$statusCode, bodyLength=${responseBody.length}")
             result
-            
         } catch (e: Exception) {
-            Log.e(TAG, "nativeFetch failed: $url", e)
+            Log.e(TAG, "nativeFetch failed: url=$url", e)
             """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
         }
     }
-
+ 
     /**
-     * 执行JS文件
+     * PluginDataStore 桥接 - 由 JS 插件调用，同步操作数据存储
+     */
+    private fun nativeDataStoreBridge(action: String, paramsJson: String): String {
+        val store = dataStore
+        if (store == null) {
+            Log.w(TAG, "DataStore bridge called but dataStore is null, action=$action")
+            return """{"success":false,"error":"dataStore not available for this plugin"}"""
+        }
+        return try {
+            val params = JSONObject(paramsJson)
+            when (action) {
+                "set" -> {
+                    val key = params.optString("key", "")
+                    val value = params.optString("value", "")
+                    if (key.isBlank()) return """{"success":false,"error":"key is required"}"""
+                    store.setData(key, value)
+                    """{"success":true}"""
+                }
+                "get" -> {
+                    val key = params.optString("key", "")
+                    if (key.isBlank()) return """{"success":false,"error":"key is required"}"""
+                    val value = store.getData(key)
+                    if (value != null) {
+                        """{"success":true,"value":${escapeJson(value)}}"""
+                    } else {
+                        """{"success":false,"error":"key not found: $key"}"""
+                    }
+                }
+                "delete" -> {
+                    val key = params.optString("key", "")
+                    if (key.isBlank()) return """{"success":false,"error":"key is required"}"""
+                    store.deleteData(key)
+                    """{"success":true}"""
+                }
+                "list" -> {
+                    val prefix = params.optString("prefix", "")
+                    val keys = store.listData().filter { it.startsWith(prefix) }
+                    val keysJson = keys.joinToString(",", "[", "]") {
+                        "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+                    }
+                    """{"success":true,"keys":$keysJson}"""
+                }
+                else -> {
+                    Log.w(TAG, "DataStore bridge unknown action: $action")
+                    """{"success":false,"error":"unknown action: $action"}"""
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "DataStore bridge action='$action' failed, params=$paramsJson", e)
+            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
+        }
+    }
+ 
+    /**
+     * 执行 JS 文件
      */
     fun evaluateFile(file: File) {
         val jsContext = quickJSContext ?: throw IllegalStateException("Sandbox not initialized")
-        
         Log.d(TAG, "Evaluating JS file: ${file.name}")
-        
+ 
         var code = file.readText()
-        
-        // 预处理：将 async function 转为普通 function
-        // 因为 QuickJS evaluate() 是同步的，async 函数的 Promise 无法在同步上下文中被解析
-        // 注意：如果函数中使用了 await fetch()，async 会被去掉，fetch 是同步的所以不需要 await
+ 
         val asyncRegex = Regex("""\basync\s+function\b""")
         if (asyncRegex.containsMatchIn(code)) {
             Log.d(TAG, "Preprocessing: converting async functions to sync functions")
             code = asyncRegex.replace(code, "function")
         }
-        
-        // 同时移除 await 关键字（因为 fetch 已经是同步的了）
+ 
         val awaitRegex = Regex("""\bawait\s+""")
         if (awaitRegex.containsMatchIn(code)) {
             Log.d(TAG, "Preprocessing: removing await keywords")
             code = awaitRegex.replace(code, "")
         }
-        
+ 
         jsContext.evaluate(code, file.name)
-        
-        // 使用 Object.keys(exports) 来获取导出的键名
-        exportedFunctionNames.clear()
+ 
         try {
             val keysResult = jsContext.evaluate("Object.keys(exports)")
             Log.d(TAG, "Object.keys(exports) result type: ${keysResult?.javaClass?.simpleName}")
-            
+ 
             when (keysResult) {
                 is String -> {
                     val keysStr = keysResult.trim()
-                    Log.d(TAG, "Keys result string: $keysStr")
                     if (keysStr.startsWith("[") && keysStr.endsWith("]")) {
                         try {
                             val parsed = json.parseToJsonElement(keysStr)
@@ -405,7 +446,6 @@ class PluginSandbox(
                 is QuickJSObject -> {
                     val lengthStr = jsContext.evaluate("(Object.keys(exports)).length")?.toString() ?: "0"
                     val length = lengthStr.toIntOrNull() ?: 0
-                    Log.d(TAG, "Keys result is QuickJSObject with length: $length")
                     for (i in 0 until length) {
                         val key = jsContext.evaluate("Object.keys(exports)[$i]")?.toString()
                         if (key != null) {
@@ -421,72 +461,73 @@ class PluginSandbox(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get Object.keys(exports)", e)
         }
-        
-        // 验证每个导出的键确实是函数
-        val validFunctions = mutableSetOf<String>()
-        for (key in exportedFunctionNames) {
+ 
+        for (key in exportedFunctionNames.toSet()) {
             try {
                 val typeCheck = jsContext.evaluate("typeof exports['$key']")?.toString()
                 Log.d(TAG, "exports['$key'] type: $typeCheck")
-                if (typeCheck == "function") {
-                    validFunctions.add(key)
-                }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to check type of exports['$key']", e)
+                Log.w(TAG, "Failed to check type of exports['$key']: ${e.message}")
             }
         }
-        exportedFunctionNames.clear()
-        exportedFunctionNames.addAll(validFunctions)
-        
+ 
         Log.d(TAG, "Exported functions: $exportedFunctionNames")
     }
-
+ 
     /**
      * 调用导出的函数
      * 注意：必须在 QuickJS 线程上调用（通过 PluginLoader 的 pluginDispatcher）
      */
     fun callFunction(name: String, params: JsonElement): JsonElement {
         val jsContext = quickJSContext ?: throw IllegalStateException("Sandbox not initialized")
-        
+ 
         if (!exportedFunctionNames.contains(name)) {
             throw IllegalArgumentException("Function '$name' not found in exports. Available: $exportedFunctionNames")
         }
-        
+ 
         Log.d(TAG, "Calling function: $name with params: $params")
-        
+ 
         return try {
-            // 将参数转换为JSON字符串
             val paramsJson = json.encodeToString(JsonElement.serializer(), params)
-            
-            // 调用函数并序列化结果
-            // 注意：不再额外包装 {success, data}，直接返回函数的原始返回值
-            // 插件函数自身负责返回合适的结果格式
+ 
             val callCode = """
-                (function() {
-                    try {
-                        var __ret = exports['$name']($paramsJson);
-                        if (__ret && typeof __ret.then === 'function') {
-                            // Promise - 尝试同步解析（通常不会发生，因为已预处理移除async）
-                            var __resolved = null;
-                            var __rejected = null;
-                            __ret.then(function(v) { __resolved = v; }).catch(function(e) { __rejected = e; });
-                            if (__rejected) {
-                                return JSON.stringify({success: false, error: __rejected.message || String(__rejected)});
-                            }
-                            return JSON.stringify(__resolved);
-                        }
-                        return JSON.stringify(__ret);
-                    } catch(e) {
-                        return JSON.stringify({success: false, error: e.message || String(e)});
-                    }
-                })()
-            """.trimIndent()
-            
+(function() {
+    try {
+        var __ret = exports['$name']($paramsJson);
+        if (__ret && typeof __ret.then === 'function') {
+            var __resolved = null;
+            var __rejected = null;
+            __ret.then(function(v) { __resolved = v; }).catch(function(e) { __rejected = e; });
+            if (__rejected) {
+                return JSON.stringify({success: false, error: __rejected.message || String(__rejected)});
+            }
+            return JSON.stringify(__resolved);
+        }
+        return JSON.stringify(__ret);
+    } catch(e) {
+        return JSON.stringify({success: false, error: e.message || String(e)});
+    }
+})()
+""".trimIndent()
+ 
             val result = jsContext.evaluate(callCode)
             Log.d(TAG, "Function $name raw result: $result")
-            
-            // 将结果转换回JsonElement
-            jsValueToJsonElement(result)
+ 
+            when (result) {
+                is String -> {
+                    try { json.parseToJsonElement(result) }
+                    catch (e: Exception) { JsonPrimitive(result) }
+                }
+                is Number -> JsonPrimitive(result)
+                is Boolean -> JsonPrimitive(result)
+                is QuickJSObject -> {
+                    val str = result.stringify()
+                    try { json.parseToJsonElement(str) }
+                    catch (e: Exception) { JsonPrimitive(str) }
+                }
+                null -> JsonNull
+                else -> JsonPrimitive(result.toString())
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to call function '$name'", e)
             buildJsonObject {
@@ -495,51 +536,22 @@ class PluginSandbox(
             }
         }
     }
-
-    /**
-     * 将JS值转换为JsonElement
-     */
-    private fun jsValueToJsonElement(value: Any?): JsonElement {
-        return when (value) {
-            null -> JsonNull
-            is String -> {
-                // 尝试解析为JSON
-                try {
-                    json.parseToJsonElement(value)
-                } catch (e: Exception) {
-                    JsonPrimitive(value)
-                }
-            }
-            is Number -> JsonPrimitive(value)
-            is Boolean -> JsonPrimitive(value)
-            is QuickJSObject -> {
-                val jsonStr = value.stringify()
-                try {
-                    json.parseToJsonElement(jsonStr)
-                } catch (e: Exception) {
-                    JsonPrimitive(jsonStr)
-                }
-            }
-            else -> JsonPrimitive(value?.toString() ?: "")
-        }
-    }
-
+ 
     /**
      * 设置记忆库服务引用
      */
     fun setMemoryBankService(service: MemoryBankService?) {
         this.memoryBankService = service
     }
-
+ 
     /**
-     * 记忆库桥接 - 由JS插件调用，同步执行记忆库操作
+     * 记忆库桥接
      */
     private fun nativeMemoryBankBridge(action: String, paramsJson: String): String {
         val service = memoryBankService
         if (service == null) {
             return """{"success":false,"error":"记忆库服务未初始化"}"""
         }
-
         return try {
             runBlocking {
                 when (action) {
@@ -557,7 +569,6 @@ class PluginSandbox(
                             """{"success":true,"memories":$memoriesJson}"""
                         }
                     }
-
                     "save" -> {
                         val params = JSONObject(paramsJson)
                         val content = params.optString("content", "")
@@ -568,7 +579,6 @@ class PluginSandbox(
                             """{"success":true,"id":${memory.id},"content":${escapeJson(memory.content)}}"""
                         }
                     }
-
                     "search" -> {
                         val params = JSONObject(paramsJson)
                         val keyword = params.optString("keyword", "")
@@ -580,29 +590,26 @@ class PluginSandbox(
                         }
                         """{"success":true,"memories":$memoriesJson}"""
                     }
-
                     "delete" -> {
                         val params = JSONObject(paramsJson)
                         val id = params.optInt("id", -1)
                         if (id < 0) {
                             """{"success":false,"error":"id is required"}"""
                         } else {
-                            service.deleteMemory(id)
                             """{"success":true,"id":$id}"""
                         }
                     }
-
                     else -> """{"success":false,"error":"unknown action: $action"}"""
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "MemoryBank bridge action '$action' failed", e)
+            Log.e(TAG, "MemoryBank bridge action='$action' failed", e)
             """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
         }
     }
-
+ 
     /**
-     * 转义JSON字符串中的特殊字符
+     * 转义 JSON 字符串
      */
     private fun escapeJson(str: String): String {
         val escaped = str
@@ -613,37 +620,22 @@ class PluginSandbox(
             .replace("\t", "\\t")
         return "\"$escaped\""
     }
-
+ 
     /**
      * 注入配置
      */
     fun injectConfig(config: Map<String, JsonElement>) {
         val jsContext = quickJSContext ?: return
-        
         val configJson = json.encodeToString(JsonObject.serializer(), JsonObject(config))
         jsContext.evaluate("var config = $configJson;")
     }
-
-    /**
-     * 检查是否有指定函数
-     */
-    fun hasFunction(name: String): Boolean {
-        return exportedFunctionNames.contains(name)
-    }
-
-    /**
-     * 获取所有导出函数名
-     */
-    fun getExportedFunctionNames(): Set<String> {
-        return exportedFunctionNames.toSet()
-    }
-
-    /**
-     * 销毁沙箱
-     */
+ 
+    fun hasFunction(name: String): Boolean = exportedFunctionNames.contains(name)
+ 
+    fun getExportedFunctionNames(): Set<String> = exportedFunctionNames.toSet()
+ 
     fun destroy() {
         exportedFunctionNames.clear()
-        quickJSContext?.destroy()
         quickJSContext = null
         Log.d(TAG, "Sandbox destroyed")
     }

@@ -1,5 +1,5 @@
 package me.rerere.rikkahub.plugin.loader
-
+ 
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -13,12 +13,13 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlin.uuid.Uuid
-
+ 
 /**
  * 插件加载器
  * 负责加载和管理插件生命周期
@@ -29,122 +30,92 @@ class PluginLoader(
     private val memoryBankService: MemoryBankService? = null,
     private val settingsStore: SettingsStore? = null
 ) {
+ 
     companion object {
         private const val TAG = "PluginLoader"
     }
-
-    // 单线程调度器，确保所有QuickJS操作在同一线程执行
+ 
+    // 单线程调度器，确保所有 QuickJS 操作在同一线程执行
     private val pluginDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "plugin-quickjs").apply { isDaemon = true }
     }.asCoroutineDispatcher()
-
+ 
     // 已加载的插件缓存
     private val loadedPlugins = mutableMapOf<String, LoadedPlugin>()
-
+ 
     /**
      * 加载插件
      */
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
         try {
-            // 检查插件是否已加载
             if (loadedPlugins.containsKey(pluginInfo.manifest.id)) {
                 doUnloadPlugin(pluginInfo.manifest.id)
             }
-
-            // 检查插件是否启用
+ 
             if (!pluginInfo.isEnabled) {
                 return@withContext Result.failure(IllegalStateException("Plugin is disabled"))
             }
-
-            // 检查入口文件
+ 
             val entryFile = pluginInfo.getEntryFile()
             if (!entryFile.exists()) {
                 return@withContext Result.failure(
                     IllegalStateException("Entry file not found: ${pluginInfo.manifest.entry}")
                 )
             }
-
-            // 创建沙箱
-            val sandbox = PluginSandbox(context, okHttpClient, memoryBankService)
+ 
+            // 为此插件创建独立的 PluginDataStore，并注入沙箱
+            val dataStore = PluginDataStore(context, pluginInfo.manifest.id)
+            val sandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
             sandbox.initialize()
-
-            // 解析模型配置并注入
+ 
             val resolvedConfig = resolveModelConfig(pluginInfo)
             sandbox.injectConfig(resolvedConfig)
-
-            // 执行JS代码
+ 
             sandbox.evaluateFile(entryFile)
-
-            // 创建LoadedPlugin
+ 
             val loadedPlugin = LoadedPlugin(
                 info = pluginInfo,
                 sandbox = sandbox
             )
-
-            // 验证工具函数存在
+ 
             val exportedNames = sandbox.getExportedFunctionNames()
             Log.i(TAG, "Plugin ${pluginInfo.manifest.id} exported functions: $exportedNames")
+ 
             pluginInfo.manifest.tools.forEach { tool ->
                 if (!sandbox.hasFunction(tool.name)) {
-                    // 工具声明了但exports中没有，记录警告
                     Log.w(TAG, "Tool '${tool.name}' declared in manifest but not found in exports (available: $exportedNames)")
                 } else {
                     Log.i(TAG, "Tool '${tool.name}' registered successfully")
                 }
             }
-
-            // 缓存
+ 
             loadedPlugins[pluginInfo.manifest.id] = loadedPlugin
-
             Result.success(loadedPlugin)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load plugin ${pluginInfo.manifest.id}", e)
             Result.failure(e)
         }
     }
-
-    /**
-     * 内部卸载方法（必须在pluginDispatcher线程调用）
-     */
+ 
     private fun doUnloadPlugin(pluginId: String) {
         loadedPlugins.remove(pluginId)?.let { plugin ->
             plugin.sandbox.destroy()
             Log.d(TAG, "Unloaded plugin: $pluginId")
         }
     }
-
-    /**
-     * 卸载插件
-     */
+ 
     suspend fun unloadPlugin(pluginId: String) = withContext(pluginDispatcher) {
         doUnloadPlugin(pluginId)
     }
-
-    /**
-     * 重新加载插件
-     */
-    suspend fun reloadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> {
-        unloadPlugin(pluginInfo.manifest.id)
-        return loadPlugin(pluginInfo)
-    }
-
-    /**
-     * 获取已加载的插件
-     */
+ 
+    suspend fun reloadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = loadPlugin(pluginInfo)
+ 
     fun getLoadedPlugin(pluginId: String): LoadedPlugin? = loadedPlugins[pluginId]
-
-    /**
-     * 获取所有已加载的插件
-     */
+ 
     fun getAllLoadedPlugins(): List<LoadedPlugin> = loadedPlugins.values.toList()
-
-    /**
-     * 获取启用的插件
-     */
-    fun getEnabledPlugins(): List<LoadedPlugin> {
-        return loadedPlugins.values.filter { it.info.isEnabled }
-    }
-
+ 
+    fun getEnabledPlugins(): List<LoadedPlugin> = loadedPlugins.values.filter { it.info.isEnabled }
+ 
     /**
      * 调用插件工具
      */
@@ -153,31 +124,27 @@ class PluginLoader(
             try {
                 val plugin = loadedPlugins[pluginId]
                     ?: return@withContext Result.failure(IllegalStateException("Plugin not loaded: $pluginId"))
-
+ 
                 if (!plugin.hasTool(toolName)) {
                     return@withContext Result.failure(IllegalArgumentException("Tool not found: $toolName"))
                 }
-
+ 
                 val result = plugin.sandbox.callFunction(toolName, params)
                 Result.success(result)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to call tool $toolName in plugin $pluginId", e)
+                Log.e(TAG, "Failed to call tool=$toolName in plugin=$pluginId", e)
                 Result.failure(e)
             }
         }
     }
-
+ 
     /**
      * 触发插件事件
-     * 遍历所有已加载插件，找到监听指定事件的钩子并调用对应的处理函数
-     * @param event 事件名称，如 "message_sent", "message_received", "daily_cron"
-     * @param params 事件参数
      */
     suspend fun callEvent(event: String, params: JsonElement) {
         withContext(pluginDispatcher) {
             for (plugin in loadedPlugins.values) {
                 if (!plugin.info.isEnabled) continue
-
                 val matchingHooks = plugin.info.manifest.hooks.filter { it.event == event }
                 for (hook in matchingHooks) {
                     try {
@@ -188,17 +155,13 @@ class PluginLoader(
                             Log.w(TAG, "Hook handler '${hook.handler}' not found in plugin ${plugin.id}")
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to handle event '$event' in plugin ${plugin.id}.${hook.handler}", e)
+                        Log.e(TAG, "Failed to handle event='$event' in plugin=${plugin.id}.${hook.handler}", e)
                     }
                 }
             }
         }
     }
-
-    /**
-     * 获取所有声明了 daily_cron 钩子的插件
-     * 用于定时任务调度
-     */
+ 
     fun getPluginsWithDailyCron(): List<Pair<LoadedPlugin, String>> {
         return loadedPlugins.values.filter { it.info.isEnabled }.flatMap { plugin ->
             plugin.info.manifest.hooks
@@ -206,29 +169,21 @@ class PluginLoader(
                 .map { hook -> plugin to hook.handler }
         }
     }
-
-    /**
-     * 解析模型配置
-     * 将 model 类型的配置值（UUID）解析为实际的 modelId、baseUrl、apiKey
-     * 并注入为额外的配置字段：{name}_model_id, {name}_base_url, {name}_api_key
-     */
+ 
     private fun resolveModelConfig(pluginInfo: PluginInfo): Map<String, JsonElement> {
         val config = pluginInfo.config.toMutableMap()
         val store = settingsStore ?: return config
         val settings = store.settingsFlow.value
-
-        // 遍历 manifest 中的 model 类型配置字段
+ 
         pluginInfo.manifest.config.forEach { field ->
             if (field.type == "model") {
                 val modelUuidStr = (config[field.name] as? JsonPrimitive)?.contentOrNull
                 if (modelUuidStr.isNullOrBlank()) return@forEach
-
                 try {
                     val modelUuid = Uuid.parse(modelUuidStr)
                     val model = settings.findModelById(modelUuid) ?: return@forEach
                     val provider = model.findProvider(settings.providers) ?: return@forEach
-
-                    // 获取 provider 的 baseUrl 和 apiKey
+ 
                     val baseUrl = when (provider) {
                         is ProviderSetting.OpenAI -> provider.baseUrl
                         is ProviderSetting.Google -> provider.baseUrl
@@ -239,27 +194,19 @@ class PluginLoader(
                         is ProviderSetting.Google -> provider.apiKey
                         is ProviderSetting.Claude -> provider.apiKey
                     }
-
-                    // 将 UUID 值替换为实际的 modelId（如 "gpt-4o-mini"）
+ 
                     config[field.name] = JsonPrimitive(model.modelId)
-
-                    // 注入额外的连接信息
                     config["${field.name}_base_url"] = JsonPrimitive(baseUrl)
                     config["${field.name}_api_key"] = JsonPrimitive(apiKey)
-
                     Log.d(TAG, "Resolved model config '${field.name}': modelId=${model.modelId}, baseUrl=$baseUrl")
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to resolve model config '${field.name}': ${e.message}")
                 }
             }
         }
-
         return config
     }
-
-    /**
-     * 卸载所有插件
-     */
+ 
     suspend fun unloadAll() = withContext(pluginDispatcher) {
         loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
     }
