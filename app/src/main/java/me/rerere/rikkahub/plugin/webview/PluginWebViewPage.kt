@@ -93,6 +93,7 @@ fun PluginWebViewPage(
     var pendingImageCallback by remember { mutableStateOf<String?>(null) }
     var pendingFileCallback by remember { mutableStateOf<String?>(null) }
     var pendingBinaryFileCallback by remember { mutableStateOf<String?>(null) }
+    var pendingImportAudioCallback by remember { mutableStateOf<String?>(null) }
     var webViewFileChooserCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
 
     // State for saveFileAs (SAF CreateDocument)
@@ -263,6 +264,73 @@ fun PluginWebViewPage(
         }
     }
 
+    // Launcher for importing audio files (Bridge.importAudioFile)
+    val audioFileImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val callbackId = pendingImportAudioCallback
+        if (callbackId != null) {
+            if (uri != null) {
+                try {
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val bytes = inputStream?.readBytes()
+                    inputStream?.close()
+
+                    if (bytes == null) {
+                        webView?.post {
+                            webView?.evaluateJavascript(
+                                "window.__bridgeResult('$callbackId', {success:false,error:'Failed to read file'});", null
+                            )
+                        }
+                    } else {
+                        // Get original file name from URI
+                        var fileName = uri.lastPathSegment ?: "unknown.mp3"
+                        // Remove path prefix if present (e.g. "primary:Music/song.mp3" -> "song.mp3")
+                        val lastSlash = fileName.lastIndexOf('/')
+                        val lastColon = fileName.lastIndexOf(':')
+                        val cutIndex = maxOf(lastSlash, lastColon)
+                        if (cutIndex >= 0) {
+                            fileName = fileName.substring(cutIndex + 1)
+                        }
+
+                        // Create music/ subdirectory in dataStore dir
+                        val musicDir = File(dataStore.getDataDir(), "music")
+                        if (!musicDir.exists()) {
+                            musicDir.mkdirs()
+                        }
+
+                        // Write bytes to music/{fileName}
+                        val targetFile = File(musicDir, fileName)
+                        targetFile.writeBytes(bytes)
+
+                        val filePath = targetFile.absolutePath
+                        val escapedPath = filePath.replace("\\", "\\\\").replace("'", "\\'")
+                        val escapedName = fileName.replace("\\", "\\\\").replace("'", "\\'")
+                        webView?.post {
+                            webView?.evaluateJavascript(
+                                "window.__bridgeResult('$callbackId', {success:true,filePath:'$escapedPath',fileName:'$escapedName'});", null
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    val errMsg = e.message?.replace("\\", "\\\\")?.replace("'", "\\'") ?: "Unknown error"
+                    webView?.post {
+                        webView?.evaluateJavascript(
+                            "window.__bridgeResult('$callbackId', {success:false,error:'$errMsg'});", null
+                        )
+                    }
+                }
+            } else {
+                webView?.post {
+                    webView?.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:false,error:'User cancelled'});", null
+                    )
+                }
+            }
+            pendingImportAudioCallback = null
+        }
+    }
+
     // Launcher for saveFileAs (SAF CreateDocument - user picks save location)
     val saveFileAsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
@@ -375,6 +443,10 @@ fun PluginWebViewPage(
                                 onPickBinaryFile = { callbackId ->
                                     pendingBinaryFileCallback = callbackId
                                     binaryFilePickerLauncher.launch(arrayOf("*/*"))
+                                },
+                                onImportAudioFile = { callbackId ->
+                                    pendingImportAudioCallback = callbackId
+                                    audioFileImportLauncher.launch(arrayOf("audio/*"))
                                 },
                                 onSaveFileAs = { callbackId, fileName, base64Data ->
                                     pendingSaveCallbackId = callbackId
@@ -697,6 +769,7 @@ private class PluginWebViewClient(
     private val onPickImage: (callbackId: String) -> Unit,
     private val onPickFile: (callbackId: String) -> Unit,
     private val onPickBinaryFile: (callbackId: String) -> Unit,
+    private val onImportAudioFile: (callbackId: String) -> Unit,
     private val onSaveFileAs: (callbackId: String, fileName: String, base64Data: String) -> Unit,
     private val onClose: () -> Unit,
     private val onStartTimer: (webView: WebView, seconds: Int) -> Unit,
@@ -837,6 +910,11 @@ private class PluginWebViewClient(
                 onPickBinaryFile(callbackId)
             }
 
+            "importAudioFile" -> {
+                val callbackId = params["callbackId"] ?: ""
+                onImportAudioFile(callbackId)
+            }
+
             "writeFile" -> {
                 val fileName = params["fileName"] ?: ""
                 val base64Data = params["data"] ?: ""
@@ -912,6 +990,78 @@ private class PluginWebViewClient(
                     webView.evaluateJavascript(
                         "window.__bridgeResult('${params["callbackId"]}', $result);", null
                     )
+                }
+            }
+
+            "musicPlay" -> {
+                val filePath = params["filePath"] ?: ""
+                val title = params["title"] ?: ""
+                val artist = params["artist"] ?: ""
+                try {
+                    MusicPlayerService.play(webView.context, filePath, title, artist)
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:true});", null
+                        )
+                    }
+                } catch (e: Exception) {
+                    val errMsg = e.message?.replace("\\", "\\\\")?.replace("'", "\\'") ?: "Unknown error"
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:false,error:'$errMsg'});", null
+                        )
+                    }
+                }
+            }
+
+            "musicPause" -> {
+                try {
+                    MusicPlayerService.pause(webView.context)
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:true});", null
+                        )
+                    }
+                } catch (e: Exception) {
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:false});", null
+                        )
+                    }
+                }
+            }
+
+            "musicResume" -> {
+                try {
+                    MusicPlayerService.resume(webView.context)
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:true});", null
+                        )
+                    }
+                } catch (e: Exception) {
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:false});", null
+                        )
+                    }
+                }
+            }
+
+            "musicStop" -> {
+                try {
+                    MusicPlayerService.stop(webView.context)
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:true});", null
+                        )
+                    }
+                } catch (e: Exception) {
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "window.__bridgeResult('${params["callbackId"]}', {success:false});", null
+                        )
+                    }
                 }
             }
 
@@ -1295,6 +1445,9 @@ private const val bridgeJavascript = """
         pickBinaryFile: function() {
             return bridgeCall('pickBinaryFile', {});
         },
+        importAudioFile: function() {
+            return bridgeCall('importAudioFile', {});
+        },
         callTool: function(toolName, params) {
             return bridgeCall('callTool', {toolName: toolName, params: params || '{}'});
         },
@@ -1336,6 +1489,18 @@ private const val bridgeJavascript = """
         },
         hideOverlay: function() {
             return bridgeCall('hideOverlay', {});
+        },
+        musicPlay: function(filePath, title, artist) {
+            return bridgeCall('musicPlay', {filePath: filePath, title: title || '', artist: artist || ''});
+        },
+        musicPause: function() {
+            return bridgeCall('musicPause', {});
+        },
+        musicResume: function() {
+            return bridgeCall('musicResume', {});
+        },
+        musicStop: function() {
+            return bridgeCall('musicStop', {});
         }
     };
 

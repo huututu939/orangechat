@@ -1,0 +1,73 @@
+{
+  "id": "com.orangechat.plugin.code_runner",
+  "name": "代码运行器",
+  "description": "执行Python和Node.js代码，支持安装依赖包，可生成Excel、PDF等文件",
+  "version": "1.0.0",
+  "author": "chloemeadow0",
+  "icon": "⚡",
+  "entry": "main.js",
+  "config": [],
+  "tools": [
+    {
+      "name": "run_python",
+      "description": "运行Python脚本。可执行任意Python代码，支持openpyxl、pandas等库生成Excel和处理数据",
+      "parameters": [
+        {
+          "name": "script",
+          "type": "string",
+          "required": true,
+          "description": "要执行的Python代码"
+        },
+        {
+          "name": "install_deps",
+          "type": "string",
+          "required": false,
+          "description": "需要先安装的pip包，空格分隔，如'openpyxl pandas'"
+        }
+      ]
+    },
+    {
+      "name": "run_node",
+      "description": "运行Node.js脚本。可执行JS代码，支持exceljs等npm包",
+      "parameters": [
+        {
+          "name": "script",
+          "type": "string",
+          "required": true,
+          "description": "要执行的JavaScript代码"
+        },
+        {
+          "name": "install_deps",
+          "type": "string",
+          "required": false,
+          "description": "需要先安装的npm包，空格分隔，如'exceljs axios'"
+        }
+      ]
+    },
+    {
+      "name": "install_python_packages",
+      "description": "安装Python依赖包",
+      "parameters": [
+        {
+          "name": "packages",
+          "type": "string",
+          "required": true,
+          "description": "包名，空格分隔"
+        }
+      ]
+    },
+    {
+      "name": "install_node_packages",
+      "description": "安装Node.js依赖包",
+      "parameters": [
+        {
+          "name": "packages",
+          "type": "string",
+          "required": true,
+          "description": "包名，空格分隔"
+        }
+      ]
+    }
+  ],
+  "promptTemplate": "你拥有代码执行能力：\n1. run_python(script, install_deps) - 运行Python代码\n2. run_node(script, install_deps) - 运行Node.js代码\n3. install_python_packages(packages) - 安装Python包\n4. install_node_packages(packages) - 安装npm包\n\n注意：\n- 如果需要生成Excel，先install_python_packages安装openpyxl，再用run_python执行\n- Python虚拟环境在 ~/.code_runner/py\n- Node工作目录在 ~/.code_runner/node\n- 生成的文件保存到 /sdcard/Download/"
+}

@@ -16,6 +16,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import me.rerere.rikkahub.data.service.MemoryBankService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
+import me.rerere.rikkahub.plugin.webview.MusicPlayerService
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -173,6 +174,46 @@ var __nativeFetch = null;
 var __memoryBankBridge = null;
 var __dataStoreBridge = null;
  
+// Bridge 桥接对象 - 执行终端命令
+var __executeCommandBridge = null;
+var Bridge = {
+    executeCommand: function(command) {
+        if (!__executeCommandBridge) throw new Error('Bridge.executeCommand not available');
+        var r = JSON.parse(__executeCommandBridge(command));
+        return r;
+    }
+};
+
+// musicPlayer 桥接对象 - 插件可直接调用
+var __musicPlayerBridge = null;
+var musicPlayer = {
+    play: function(filePath, title, artist) {
+        if (!__musicPlayerBridge) throw new Error('musicPlayer bridge not available');
+        var r = JSON.parse(__musicPlayerBridge('play', JSON.stringify({filePath: filePath, title: title || '', artist: artist || ''})));
+        return r;
+    },
+    pause: function() {
+        if (!__musicPlayerBridge) throw new Error('musicPlayer bridge not available');
+        var r = JSON.parse(__musicPlayerBridge('pause', '{}'));
+        return r;
+    },
+    resume: function() {
+        if (!__musicPlayerBridge) throw new Error('musicPlayer bridge not available');
+        var r = JSON.parse(__musicPlayerBridge('resume', '{}'));
+        return r;
+    },
+    stop: function() {
+        if (!__musicPlayerBridge) throw new Error('musicPlayer bridge not available');
+        var r = JSON.parse(__musicPlayerBridge('stop', '{}'));
+        return r;
+    },
+    getStatus: function() {
+        if (!__musicPlayerBridge) return {state: 'stopped', title: '', artist: ''};
+        var r = JSON.parse(__musicPlayerBridge('getStatus', '{}'));
+        return r;
+    }
+};
+
 // dataStore 桥接对象 - 插件可直接调用
 var dataStore = {
     set: function(key, value) {
@@ -246,6 +287,18 @@ function fetch(url, options) {
                 }
             })
  
+            // 注入 MusicPlayer 桥接
+            getGlobalObject().setProperty("__musicPlayerBridge", JSCallFunction { args ->
+                val action = args[0] as? String ?: ""
+                val paramsJson = args[1] as? String ?: "{}"
+                try {
+                    nativeMusicPlayerBridge(action, paramsJson)
+                } catch (e: Exception) {
+                    Log.e(TAG, "MusicPlayer bridge error: action=$action", e)
+                    """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
+                }
+            })
+
             // 注入 PluginDataStore 桥接
             getGlobalObject().setProperty("__dataStoreBridge", JSCallFunction { args ->
                 val action = args[0] as? String ?: ""
@@ -255,6 +308,17 @@ function fetch(url, options) {
                 } catch (e: Exception) {
                     Log.e(TAG, "DataStore bridge error: action=$action, params=$paramsJson", e)
                     """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
+                }
+            })
+
+            // 注入 Bridge.executeCommand 桥接
+            getGlobalObject().setProperty("__executeCommandBridge", JSCallFunction { args ->
+                val command = args[0] as? String ?: ""
+                try {
+                    nativeExecuteCommandBridge(command)
+                } catch (e: Exception) {
+                    Log.e(TAG, "ExecuteCommand bridge error: command=$command", e)
+                    """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
                 }
             })
         }
@@ -328,6 +392,54 @@ function fetch(url, options) {
         }
     }
  
+    /**
+     * MusicPlayer 桥接 - 由 JS 插件调用，同步控制音乐播放
+     */
+    private fun nativeMusicPlayerBridge(action: String, paramsJson: String): String {
+        return try {
+            when (action) {
+                "play" -> {
+                    val params = JSONObject(paramsJson)
+                    val filePath = params.optString("filePath", "")
+                    val title = params.optString("title", "")
+                    val artist = params.optString("artist", "")
+                    if (filePath.isBlank()) {
+                        """{"success":false,"error":"filePath is required"}"""
+                    } else {
+                        MusicPlayerService.play(context, filePath, title, artist)
+                        """{"success":true}"""
+                    }
+                }
+                "pause" -> {
+                    MusicPlayerService.pause(context)
+                    """{"success":true}"""
+                }
+                "resume" -> {
+                    MusicPlayerService.resume(context)
+                    """{"success":true}"""
+                }
+                "stop" -> {
+                    MusicPlayerService.stop(context)
+                    """{"success":true}"""
+                }
+                "getStatus" -> {
+                    val status = MusicPlayerService.getNowPlaying()
+                    val state = status["state"] ?: "stopped"
+                    val title = status["title"] ?: ""
+                    val artist = status["artist"] ?: ""
+                    """{"state":"${state}","title":${escapeJson(title)},"artist":${escapeJson(artist)}}"""
+                }
+                else -> {
+                    Log.w(TAG, "MusicPlayer bridge unknown action: $action")
+                    """{"success":false,"error":"unknown action: $action"}"""
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "MusicPlayer bridge action='$action' failed", e)
+            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
+        }
+    }
+
     /**
      * PluginDataStore 桥接 - 由 JS 插件调用，同步操作数据存储
      */
@@ -608,6 +720,62 @@ function fetch(url, options) {
         }
     }
  
+    /**
+     * Bridge.executeCommand 桥接 - 执行终端命令
+     * 返回 { success: Boolean, output: String, exitCode: Int }
+     */
+    private fun nativeExecuteCommandBridge(command: String): String {
+        Log.d(TAG, "nativeExecuteCommand: $command")
+        if (command.isBlank()) {
+            return """{"success":false,"error":"command is empty","exitCode":-1}"""
+        }
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+
+            val output = StringBuilder()
+            val error = StringBuilder()
+
+            val readerThread = Thread {
+                try {
+                    process.inputStream.bufferedReader().forEachLine { line ->
+                        output.appendLine(line)
+                    }
+                } catch (_: Exception) {}
+            }
+            val errorThread = Thread {
+                try {
+                    process.errorStream.bufferedReader().forEachLine { line ->
+                        error.appendLine(line)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            readerThread.start()
+            errorThread.start()
+
+            // 等待进程完成，最多30秒
+            val finished = process.waitFor(30, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                readerThread.join(1000)
+                errorThread.join(1000)
+                return """{"success":false,"error":"Command timed out after 30 seconds","exitCode":-1}"""
+            }
+
+            readerThread.join(3000)
+            errorThread.join(3000)
+
+            val exitCode = process.exitValue()
+            val combinedOutput = output.toString().trimEnd() +
+                    if (error.isNotEmpty()) "\n${error.toString().trimEnd()}" else ""
+
+            """{"success":${exitCode == 0},"output":${escapeJson(combinedOutput)},"exitCode":$exitCode}"""
+        } catch (e: Exception) {
+            Log.e(TAG, "nativeExecuteCommand failed: $command", e)
+            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}","exitCode":-1}"""
+        }
+    }
+
     /**
      * 转义 JSON 字符串
      */

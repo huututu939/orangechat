@@ -218,6 +218,16 @@
         android:value="pomodoro timer countdown notification" />
     </service>
 
+    <!-- Music Player Service -->
+    <service
+      android:name=".plugin.webview.MusicPlayerService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="background music playback" />
+    </service>
+
     <provider
       android:name="androidx.core.content.FileProvider"
       android:authorities="${applicationId}.fileprovider"
