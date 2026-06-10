@@ -50,9 +50,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import me.rerere.document.CsvParser
+import me.rerere.document.ExcelGenerator
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import me.rerere.highlight.HighlightText
@@ -118,6 +123,33 @@ fun HighlightCodeBlock(
     val autoWrap = settings.displaySetting.codeBlockAutoWrap
     val showLineNumbers = settings.displaySetting.showLineNumbers
 
+    val isExcelLanguage = remember(normalizedLanguage) {
+        normalizedLanguage in setOf("csv", "excel", "xlsx")
+    }
+
+    var pendingExcelBytes by remember { mutableStateOf<ByteArray?>(null) }
+
+    val excelDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    ) { uri: Uri? ->
+        val bytesToWrite = pendingExcelBytes
+        uri?.let {
+            scope.launch {
+                try {
+                    context.contentResolver.openOutputStream(it)?.use { outputStream ->
+                        bytesToWrite?.let { bytes -> outputStream.write(bytes) }
+                    }
+                } catch (e: Exception) {
+                    Log.e("HighlightCodeBlock", "Excel save failed: uri=$it, size=${bytesToWrite?.size}", e)
+                } finally {
+                    pendingExcelBytes = null
+                }
+            }
+        }
+    }
+
     val createDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*")
     ) { uri: Uri? ->
@@ -159,6 +191,35 @@ fun HighlightCodeBlock(
                 onTogglePreviewMode = {
                     previewMode = !previewMode
                 },
+                isExcelLanguage = isExcelLanguage,
+                onExportExcel = if (isExcelLanguage) {
+                    {
+                        scope.launch {
+                            try {
+                                val bytes = withContext(Dispatchers.IO) {
+                                    if (normalizedLanguage == "csv") {
+                                        val rows = CsvParser.parse(code)
+                                        ExcelGenerator.generate(rows)
+                                    } else {
+                                        // excel / xlsx 语言标签：带样式 JSON 格式
+                                        ExcelGenerator.generateStyled(code)
+                                    }
+                                }
+                                pendingExcelBytes = bytes
+                                val ts = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+                                val baseName = language.substringAfterLast("/").substringBeforeLast(".")
+                                val fileName = if (baseName.isNotBlank() && baseName != language) {
+                                    "$baseName.xlsx"
+                                } else {
+                                    "export_${ts.year}${ts.month.toString().padStart(2, '0')}${ts.day.toString().padStart(2, '0')}_${ts.hour.toString().padStart(2, '0')}${ts.minute.toString().padStart(2, '0')}${ts.second.toString().padStart(2, '0')}.xlsx"
+                                }
+                                excelDocumentLauncher.launch(fileName)
+                            } catch (e: Exception) {
+                                Log.e("HighlightCodeBlock", "Excel export failed: lang=$normalizedLanguage, codeLen=${code.length}", e)
+                            }
+                        }
+                    }
+                } else null,
             )
         }
         Column(
@@ -364,6 +425,8 @@ private fun HighlightCodeActions(
     previewMode: Boolean = false,
     canInlinePreview: Boolean = false,
     onTogglePreviewMode: () -> Unit = {},
+    isExcelLanguage: Boolean = false,
+    onExportExcel: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -383,6 +446,19 @@ private fun HighlightCodeActions(
         ) {
             val iconSize = 16.dp
             val iconTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+
+            if (isExcelLanguage && onExportExcel != null) {
+                Text(
+                    text = "xlsx",
+                    fontSize = 11.sp,
+                    lineHeight = 11.sp,
+                    color = iconTint,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .onClick { onExportExcel() }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                )
+            }
 
             Icon(
                 imageVector = HugeIcons.Download04,
@@ -425,6 +501,8 @@ private fun HighlightCodeActions(
                                 "perl" -> "pl"
                                 "r" -> "r"
                                 "scala" -> "scala"
+                                "csv" -> "csv"
+                                "excel", "xlsx" -> "xlsx"
                                 "jsx" -> "jsx"
                                 "tsx" -> "tsx"
                                 else -> "txt"
@@ -564,6 +642,8 @@ if (extension.isEmpty()) {
         "lua" -> "lua"
         "pl" -> "perl"
         "scala" -> "scala"
+        "csv" -> "csv"
+        "xlsx" -> "xlsx"
         "gradle" -> "gradle"
         else -> {
             when (fileName.lowercase()) {
