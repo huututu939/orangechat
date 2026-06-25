@@ -21,6 +21,7 @@ data class SupabaseSyncData(
     val appUsage: List<SupabaseAppUsageData> = emptyList(),
     val notifications: List<SupabaseNotificationData> = emptyList(),
     val foregroundApp: String = "",
+    val deviceEvent: String? = null,
 )
 
 @Serializable
@@ -130,7 +131,38 @@ class SupabaseService(
             map["notifications"] = JsonPrimitive(notificationsJson)
         }
 
+        data.deviceEvent?.let { event ->
+            map["device_event"] = JsonPrimitive(event)
+        }
+
         return JsonObject(map)
+    }
+}
+
+/**
+ * 轻量插入：只写入 timestamp + device_event，不走 collectAndUpload 的全量采集。
+ * 用于开机/亮屏/黑屏事件推送，一天可能触发几十次，全量采集太费电费流量。
+ *
+ * 调用方需自行先判断 systemToolsSetting.supabaseEnabled && url/key 非空，
+ * 不满足条件应跳过（本方法内部会因 url/key 空白抛 IllegalArgumentException，
+ * 由 runCatching 捕获并以 Result 返回，不会向上抛异常）。
+ */
+suspend fun SupabaseService.insertDeviceEvent(eventType: String): Result<Unit> {
+    return runCatching {
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        val timestamp = sdf.format(java.util.Date())
+        val syncData = SupabaseSyncData(
+            timestamp = timestamp,
+            deviceEvent = eventType
+        )
+        insertRow(syncData).getOrThrow()
+        Log.d("SupabaseService", "insertDeviceEvent success, eventType=$eventType")
+    }.onFailure { e ->
+        Log.e("SupabaseService", "insertDeviceEvent failed, eventType=$eventType", e)
+    }.map {
+        // insertRow 返回 Result<Int>(其内部 Log.d 返回 Int),链了 .onFailure 后 Kotlin 无法从
+        // 函数返回类型 Result<Unit> 反推泛型,会把 R 推断为 Int。用 .map { } 把 Result<Int>
+        // 规约为 Result<Unit>,不改变成功/失败语义(失败仍保留原始异常)。
     }
 }
 

@@ -237,6 +237,48 @@ class SupabaseSyncReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED -> {
                 Log.d("SupabaseSyncService", "Boot completed, rescheduling Supabase sync")
                 SupabaseSyncService.rescheduleIfEnabled(context)
+
+                // 开机事件追踪：常驻前台服务不会随系统重启自动复活，需手动拉起一次。
+                // 独立 try-catch，不能影响原有 reschedule 逻辑。
+                try {
+                    DeviceEventTrackingService.startIfEnabled(context)
+                } catch (e: Exception) {
+                    Log.e("SupabaseSyncService", "Boot: start DeviceEventTrackingService failed", e)
+                }
+
+                // 推送一条 boot 事件。独立 try-catch + 协程，不阻塞 onReceive。
+                try {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val settingsStore = GlobalContext.get().get<SettingsStore>()
+                            val settings = settingsStore.settingsFlowRaw.first()
+                            val s = settings.systemToolsSetting
+                            if (s.deviceEventTrackingEnabled &&
+                                s.supabaseEnabled &&
+                                s.supabaseUrl.isNotBlank() &&
+                                s.supabaseApiKey.isNotBlank()
+                            ) {
+                                val service = SupabaseService(
+                                    supabaseUrl = s.supabaseUrl,
+                                    supabaseApiKey = s.supabaseApiKey,
+                                    tableName = s.supabaseTableName
+                                )
+                                val result = service.insertDeviceEvent("boot")
+                                if (result.isSuccess) {
+                                    Log.d("SupabaseSyncService", "Boot: pushed boot event")
+                                } else {
+                                    Log.e("SupabaseSyncService", "Boot: push boot event failed", result.exceptionOrNull())
+                                }
+                            } else {
+                                Log.d("SupabaseSyncService", "Boot: deviceEventTrackingEnabled=false or config incomplete, skip boot event")
+                            }
+                        } catch (e: Exception) {
+                            Log.e("SupabaseSyncService", "Boot: insertDeviceEvent coroutine error", e)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("SupabaseSyncService", "Boot: launch boot event coroutine failed", e)
+                }
             }
         }
     }

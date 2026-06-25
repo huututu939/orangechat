@@ -302,6 +302,42 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                             )
                         }
                     )
+                    item(
+                        leadingContent = { Icon(imageVector = HugeIcons.SmartPhone01, contentDescription = null) },
+                        headlineContent = { Text("开机/亮屏/黑屏事件推送") },
+                        supportingContent = {
+                            Text("开启后会在设备开机、亮屏、黑屏时立即推送一条事件记录到同一张数据表。需要保持一个常驻通知以实时监听亮屏/黑屏状态，会有持续小幅耗电；如遇频繁失效，请到系统设置中把本App加入电池优化白名单。")
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = systemToolsSetting.deviceEventTrackingEnabled,
+                                onCheckedChange = { enabled ->
+                                    val newSetting = systemToolsSetting.copy(deviceEventTrackingEnabled = enabled)
+                                    updateSystemToolsSetting(newSetting)
+                                    if (enabled) {
+                                        if (newSetting.supabaseEnabled &&
+                                            newSetting.supabaseUrl.isNotBlank() &&
+                                            newSetting.supabaseApiKey.isNotBlank()
+                                        ) {
+                                            try {
+                                                context.startForegroundService(
+                                                    Intent(context, me.rerere.rikkahub.data.service.DeviceEventTrackingService::class.java)
+                                                )
+                                            } catch (e: Exception) {
+                                                android.util.Log.e("SettingSystemToolsPage", "启动 DeviceEventTrackingService 失败", e)
+                                            }
+                                        } else {
+                                            android.util.Log.w("SettingSystemToolsPage", "Supabase 未配置完整，跳过启动 DeviceEventTrackingService")
+                                        }
+                                    } else {
+                                        context.stopService(
+                                            Intent(context, me.rerere.rikkahub.data.service.DeviceEventTrackingService::class.java)
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    )
                     var supabaseNextTime by remember { mutableStateOf(me.rerere.rikkahub.data.service.SupabaseSyncService.getNextTriggerTime(context)) }
                     var supabaseSyncing by remember { mutableStateOf(me.rerere.rikkahub.data.service.SupabaseSyncService.isSyncing(context)) }
                     LaunchedEffect(systemToolsSetting) {
@@ -377,7 +413,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                     item(
                         headlineContent = { Text("说明") },
                         supportingContent = {
-                            Text("需要先在 Supabase 创建数据表，表结构需包含以下字段：\ntimestamp (text), foreground_app (text), location_latitude (float), location_longitude (float), location_address (text), location_city (text), location_district (text), location_street (text), app_usage (text/jsonb), notifications (text/jsonb)")
+                            Text("需要先在 Supabase 创建数据表，表结构需包含以下字段：\ntimestamp (text), foreground_app (text), location_latitude (float), location_longitude (float), location_address (text), location_city (text), location_district (text), location_street (text), app_usage (text/jsonb), notifications (text/jsonb), device_event (text)")
                         }
                     )
                 }

@@ -178,6 +178,16 @@
         android:value="supabase data sync" />
     </service>
 
+    <!-- Device Event Tracking Service (realtime screen on/off + boot push to Supabase) -->
+    <service
+      android:name=".data.service.DeviceEventTrackingService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="device boot/screen event tracking for supabase sync" />
+    </service>
+
     <!-- Supabase Sync Receiver -->
     <receiver
       android:name=".data.service.SupabaseSyncReceiver"

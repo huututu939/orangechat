@@ -32,6 +32,7 @@ import me.rerere.rikkahub.plugin.di.pluginModule
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.service.DailySummaryService
+import me.rerere.rikkahub.data.service.DeviceEventTrackingService
 import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.data.service.SupabaseSyncService
 import me.rerere.rikkahub.service.WebServerService
@@ -50,6 +51,7 @@ const val CHAT_LIVE_UPDATE_NOTIFICATION_CHANNEL_ID = "chat_live_update"
 const val WEB_SERVER_NOTIFICATION_CHANNEL_ID = "web_server"
 const val POMODORO_NOTIFICATION_CHANNEL_ID = "pomodoro_timer"
 const val MUSIC_PLAYER_NOTIFICATION_CHANNEL_ID = "music_player"
+const val DEVICE_EVENT_NOTIFICATION_CHANNEL_ID = "device_event_tracking"
 
 class RikkaHubApp : Application() {
     companion object {
@@ -100,6 +102,9 @@ class RikkaHubApp : Application() {
 
         // Reschedule Supabase sync alarm if enabled
         rescheduleSupabaseSyncIfEnabled()
+
+        // Start device event tracking (screen on/off realtime listener) if enabled
+        startDeviceEventTrackingIfEnabled()
 
         // Reschedule daily_cron alarm if plugins need it
         rescheduleDailyCronIfEnabled()
@@ -158,6 +163,14 @@ class RikkaHubApp : Application() {
 
     private fun rescheduleSupabaseSyncIfEnabled() {
         SupabaseSyncService.rescheduleIfEnabled(this)
+    }
+
+    private fun startDeviceEventTrackingIfEnabled() {
+        runCatching {
+            DeviceEventTrackingService.startIfEnabled(this)
+        }.onFailure {
+            Log.e(TAG, "startDeviceEventTrackingIfEnabled failed", it)
+        }
     }
 
     private fun rescheduleDailyCronIfEnabled() {
@@ -247,6 +260,14 @@ class RikkaHubApp : Application() {
             .setShowBadge(false)
             .build()
         notificationManager.createNotificationChannel(musicChannel)
+
+        val deviceEventChannel = NotificationChannelCompat
+            .Builder(DEVICE_EVENT_NOTIFICATION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
+            .setName("设备状态同步")
+            .setVibrationEnabled(false)
+            .setShowBadge(false)
+            .build()
+        notificationManager.createNotificationChannel(deviceEventChannel)
     }
 
     override fun onTerminate() {
