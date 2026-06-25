@@ -413,7 +413,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                     item(
                         headlineContent = { Text("说明") },
                         supportingContent = {
-                            Text("需要先在 Supabase 创建数据表，表结构需包含以下字段：\ntimestamp (text), foreground_app (text), location_latitude (float), location_longitude (float), location_address (text), location_city (text), location_district (text), location_street (text), app_usage (text/jsonb), notifications (text/jsonb), device_event (text)")
+                            Text("需要先在 Supabase 创建数据表，表结构需包含以下字段：\ntimestamp (text), foreground_app (text), location_latitude (float), location_longitude (float), location_address (text), location_city (text), location_district (text), location_street (text), app_usage (text/jsonb), notifications (text/jsonb), device_event (text), health_data (jsonb)")
                         }
                     )
                 }

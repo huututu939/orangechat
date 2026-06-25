@@ -22,6 +22,7 @@ data class SupabaseSyncData(
     val notifications: List<SupabaseNotificationData> = emptyList(),
     val foregroundApp: String = "",
     val deviceEvent: String? = null,
+    val health: SupabaseHealthData? = null,
 )
 
 @Serializable
@@ -50,6 +51,27 @@ data class SupabaseNotificationData(
     val content: String,
     val timestamp: Long,
     val category: String? = null,
+)
+
+@Serializable
+data class SupabaseHealthData(
+    val heartRate: Int? = null,          // 当前心率（最新一条采样）
+    val stepsToday: Int? = null,         // 今日步数
+    val caloriesToday: Int? = null,      // 今日卡路里
+    val hrRestingToday: Int? = null,     // 今日静息心率
+    val hrMaxToday: Int? = null,         // 今日最高心率
+    val hrMinToday: Int? = null,         // 今日最低心率
+    val hrAvgToday: Int? = null,         // 今日平均心率
+    val spo2: Int? = null,               // 最新血氧
+    val spo2AvgToday: Int? = null,       // 今日平均血氧
+    val stress: Int? = null,             // 最新压力值
+    val stressAvgToday: Int? = null,     // 今日平均压力
+    val sleepStartMs: Long? = null,      // 最近一次入睡时间（毫秒时间戳）
+    val sleepWakeupMs: Long? = null,     // 最近一次醒来时间（毫秒时间戳）
+    val sleepTotalMinutes: Int? = null,  // 总睡眠时长（分钟）
+    val sleepDeepMinutes: Int? = null,   // 深睡时长（分钟）
+    val sleepLightMinutes: Int? = null,  // 浅睡时长（分钟）
+    val sleepRemMinutes: Int? = null,    // REM 时长（分钟）
 )
 
 class SupabaseService(
@@ -133,6 +155,11 @@ class SupabaseService(
 
         data.deviceEvent?.let { event ->
             map["device_event"] = JsonPrimitive(event)
+        }
+
+        data.health?.let { h ->
+            val healthJson = json.encodeToString(SupabaseHealthData.serializer(), h)
+            map["health_data"] = JsonPrimitive(healthJson)
         }
 
         return JsonObject(map)
@@ -279,12 +306,68 @@ suspend fun SupabaseService.collectAndUpload(context: Context): Result<Unit> {
             android.util.Log.w("SupabaseService", "Failed to get foreground app", e)
         }
 
+        // Collect health data (Gadgetbridge)
+        var healthData: SupabaseHealthData? = null
+        try {
+            if (settings.systemToolsSetting.gadgetbridgeEnabled) {
+                val gbPath = settings.systemToolsSetting.gadgetbridgeDbPath
+                if (me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader.dbFileExists(gbPath)) {
+                    val dailySummaries = me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
+                        .readDailySummaries(7, gbPath)
+                    val todaySummary = dailySummaries.lastOrNull() // 与 HealthVM 取"今日"同样的写法
+
+                    val latestActivity = me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
+                        .readLatestActivitySample(gbPath)
+
+                    val (latestSpo2, latestStress) = me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
+                        .readLatestSpo2AndStress(gbPath)
+
+                    // 取最近一条睡眠记录。如需排除"小睡"，把下一行换成：
+                    // .readSleepSummaries(7, gbPath).firstOrNull { !it.isNap }
+                    val latestSleep = me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
+                        .readSleepSummaries(7, gbPath).firstOrNull()
+
+                    healthData = SupabaseHealthData(
+                        heartRate = latestActivity?.heartRate,
+                        stepsToday = todaySummary?.steps,
+                        caloriesToday = todaySummary?.calories,
+                        hrRestingToday = todaySummary?.hrResting,
+                        hrMaxToday = todaySummary?.hrMax,
+                        hrMinToday = todaySummary?.hrMin,
+                        hrAvgToday = todaySummary?.hrAvg,
+                        spo2 = latestSpo2,
+                        spo2AvgToday = todaySummary?.spo2Avg,
+                        stress = latestStress,
+                        stressAvgToday = todaySummary?.stressAvg,
+                        sleepStartMs = latestSleep?.timestamp,
+                        sleepWakeupMs = latestSleep?.wakeupTime,
+                        sleepTotalMinutes = latestSleep?.totalDuration,
+                        sleepDeepMinutes = latestSleep?.deepSleep,
+                        sleepLightMinutes = latestSleep?.lightSleep,
+                        sleepRemMinutes = latestSleep?.remSleep,
+                    )
+                    android.util.Log.d(
+                        "SupabaseService",
+                        "Health data collected: heartRate=${healthData.heartRate}, " +
+                            "stepsToday=${healthData.stepsToday}, sleepTotalMinutes=${healthData.sleepTotalMinutes}"
+                    )
+                } else {
+                    android.util.Log.w("SupabaseService", "Gadgetbridge db file not found, skip health data, path=$gbPath")
+                }
+            } else {
+                android.util.Log.d("SupabaseService", "gadgetbridgeEnabled=false, skip health data")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SupabaseService", "Failed to collect health data", e)
+        }
+
         val syncData = SupabaseSyncData(
             timestamp = timestamp,
             location = locationData,
             appUsage = appUsageData,
             notifications = notificationData,
-            foregroundApp = foregroundApp
+            foregroundApp = foregroundApp,
+            health = healthData,
         )
 
         insertRow(syncData).getOrThrow()

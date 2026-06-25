@@ -487,11 +487,15 @@ object GadgetbridgeReader {
      * - WAKEUP_TIME 字段可靠，是真实的醒来时刻（毫秒）。
      * - 总时长公式：(WAKEUP_TIME - TIMESTAMP) / 1000 / 60（分钟）。已用真实三条记录验证，
      *   结果 7.43h / 4.28h / 1.13h 均合理，不需要任何 >24h 清零兜底逻辑。
-     * - DEEP_PART 映射到 deepSleep；含义未经官方源码确认，实测数值在 0-100 区间（更像占比%），
-     *   不做单位换算；-1 视为未测量置 0。
-     * - lightSleep / remSleep：华为本表无对应字段，置 0。
-     * - isAwake：华为本表无此语义，置 false。
-     * - awakeDuration：WAKE_COUNT 字段是次数不是时长，语义不同不映射，置 0。
+     * - deepSleep / lightSleep / remSleep / awakeDuration：本表无现成字段，改为查询
+     *   HUAWEI_SLEEP_STAGE_SAMPLE 逐分钟阶段表，按 STAGE 归类累加（每行 = 1 分钟）。
+     *   STAGE 语义已通过 Gadgetbridge 官方源码 HuaweiSampleProvider.java::toActivityKind() 验证，
+     *   并已用真实数据库交叉验证（各阶段分钟数加总正好等于总时长，无缺口）：
+     *     1=浅睡(lightSleep) 2=REM(remSleep) 3=深睡(deepSleep) 4=清醒(awakeDuration)
+     *     5=小睡片段(NAP，官方归并计入 lightSleep) 其它值=未知(仅打日志，不计入)
+     *   时间边界按官方写法：起点向下取整到整分钟，终点向下取整后扣 1 分钟（"醒来那一分钟"不算）。
+     * - DEEP_PART 列不再使用（实测为 0-100 的占比值，不是分钟数，旧逻辑直接当深睡分钟用是错的）。
+     * - isAwake：华为本表无此语义，置 false（本次不重新设计小睡判断，留作后续单独处理）。
      */
     private fun readSleepSummariesHuawei(db: SQLiteDatabase, days: Int): List<SleepSummary> {
         val summaries = mutableListOf<SleepSummary>()
@@ -505,7 +509,7 @@ object GadgetbridgeReader {
         return try {
             val cursor = db.query(
                 "HUAWEI_SLEEP_STATS_SAMPLE",
-                arrayOf("TIMESTAMP", "WAKEUP_TIME", "DEEP_PART"),
+                arrayOf("TIMESTAMP", "WAKEUP_TIME"),
                 "TIMESTAMP >= ?",
                 arrayOf(startMs.toString()),
                 null, null, "TIMESTAMP DESC"
@@ -516,10 +520,10 @@ object GadgetbridgeReader {
                         // 入睡时刻 = 行自身 TIMESTAMP（毫秒）；不读 BED_TIME（该字段实测坏的）
                         val sleepStartMs = it.getLong(it.getColumnIndexOrThrow("TIMESTAMP"))
                         val wakeupTimeMs = it.getLong(it.getColumnIndexOrThrow("WAKEUP_TIME"))
-                        val deepPartRaw = it.getInt(it.getColumnIndexOrThrow("DEEP_PART"))
 
                         // 总时长（分钟）：(WAKEUP_TIME - TIMESTAMP) / 1000 / 60
                         // 已用真实数据验证，公式正确，不加任何 >24h 清零兜底
+                        // 注意：故意保持独立计算，不等于四个阶段分钟数之和，以防阶段数据缺失时总时长塌成 0
                         val totalDuration = try {
                             if (wakeupTimeMs > sleepStartMs) {
                                 ((wakeupTimeMs - sleepStartMs) / 1000L / 60L).toInt()
@@ -531,19 +535,54 @@ object GadgetbridgeReader {
                             0
                         }
 
-                        // 深睡：DEEP_PART；含义未经官方确认（数值 0-100，推测为占比%），不做单位换算
-                        // -1 视为未测量，置 0
-                        val deepSleep = if (deepPartRaw == -1) 0 else deepPartRaw
+                        // 逐分钟睡眠阶段分布：查 HUAWEI_SLEEP_STAGE_SAMPLE，按 STAGE 分组计数（每行=1分钟）。
+                        // 边界按 Gadgetbridge 官方源码写法：起点向下取整到整分钟，终点向下取整后扣 1 分钟
+                        // （"醒来那一分钟"本身不算在睡眠阶段里）。
+                        var deepMinutes = 0
+                        var lightMinutes = 0
+                        var remMinutes = 0
+                        var awakeMinutes = 0
+                        try {
+                            val stageFromMs = (sleepStartMs / 60000L) * 60000L
+                            val stageToMs = (wakeupTimeMs / 60000L) * 60000L - 60000L
+                            db.query(
+                                "HUAWEI_SLEEP_STAGE_SAMPLE",
+                                arrayOf("STAGE", "COUNT(*)"),
+                                "TIMESTAMP >= ? AND TIMESTAMP <= ?",
+                                arrayOf(stageFromMs.toString(), stageToMs.toString()),
+                                "STAGE", null, null
+                            ).use { c ->
+                                var hasRows = false
+                                while (c.moveToNext()) {
+                                    hasRows = true
+                                    // 用位置索引读取（与 readDailySummariesHuawei 聚合查询风格一致，
+                                    // 不用 getColumnIndexOrThrow("COUNT(*)")，聚合列名跨驱动不一致）
+                                    val stage = c.getInt(0)
+                                    val count = c.getInt(1)
+                                    when (stage) {
+                                        3 -> deepMinutes += count
+                                        // STAGE=1(浅睡) 和 STAGE=5(小睡片段) 都计入 lightSleep
+                                        1, 5 -> lightMinutes += count
+                                        2 -> remMinutes += count
+                                        4 -> awakeMinutes += count
+                                        else -> Log.w(TAG, "出现未知STAGE值=$stage, 忽略")
+                                    }
+                                }
+                                if (!hasRows) {
+                                    // 完全没有阶段细分数据（设备未上传/快照不完整）：如实保留 0，不是 bug
+                                    Log.w(TAG, "华为 sleep 阶段数据为空 sleepStartMs=$sleepStartMs wakeupTimeMs=$wakeupTimeMs")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // 阶段查询失败不阻断本条 session 其它字段（如 totalDuration）的计算
+                            Log.e(TAG, "华为 sleep 阶段查询失败 sleepStartMs=$sleepStartMs wakeupTimeMs=$wakeupTimeMs", e)
+                        }
 
-                        // 华为本表无浅睡 / REM 细分字段，置 0
-                        // 如后续需要分段数据，可考虑读取 HUAWEI_SLEEP_STAGE_SAMPLE（本实现暂不处理，
-                        // 且该表 STAGE 数字含义未经官方源码确认，避免贴错语义标签）
-                        val lightSleep = 0
-                        val remSleep = 0
-
-                        // WAKE_COUNT 是次数不是时长，语义不同，不映射到 awakeDuration
-                        val awakeDuration = 0
-                        // 华为本表无"是否短暂清醒"语义
+                        val deepSleep = deepMinutes
+                        val lightSleep = lightMinutes
+                        val remSleep = remMinutes
+                        val awakeDuration = awakeMinutes
+                        // 华为本表无"是否短暂清醒"语义（本次不重新设计小睡判断逻辑）
                         val isAwake = false
 
                         summaries.add(
