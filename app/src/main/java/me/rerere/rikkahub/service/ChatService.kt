@@ -59,6 +59,7 @@ import me.rerere.rikkahub.data.ai.GenerationHandler
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
+import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.files.SkillManager
@@ -609,7 +610,7 @@ addAll(localTools.getTools(assistant.localTools))
                     mcpManager.getAllAvailableTools().forEach { (serverId, tool) ->
                         add(
                             Tool(
-                                name = "mcp__" + tool.name,
+                                name = ToolNaming.buildMcpToolName(serverId, tool.name),
                                 description = tool.description ?: "",
                                 parameters = { tool.inputSchema },
                                 needsApproval = tool.needsApproval,
@@ -1007,7 +1008,7 @@ addAll(localTools.getTools(assistant.localTools))
         return when {
             // 正在执行工具
             lastTool != null && !lastTool.isExecuted -> {
-                val toolName = lastTool.toolName.removePrefix("mcp__")
+                val toolName = ToolNaming.toDisplayName(lastTool.toolName)
                 Triple(
                     context.getString(R.string.notification_live_update_chip_tool),
                     context.getString(R.string.notification_live_update_tool, toolName),

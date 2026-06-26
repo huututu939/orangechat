@@ -8,6 +8,7 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.plugin.loader.LoadedPlugin
 import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.model.PluginToolDefinition
@@ -50,7 +51,7 @@ class PluginToolProvider(
      */
     private fun createTool(plugin: LoadedPlugin, toolDef: PluginToolDefinition): Tool {
         return Tool(
-            name = toolDef.name,
+            name = ToolNaming.buildPluginToolName(plugin.id, toolDef.name),
             description = buildDescription(plugin, toolDef),
             parameters = {
                 InputSchema.Obj(
@@ -132,11 +133,44 @@ class PluginToolProvider(
     }
 
     /**
-     * 获取所有开启了 inject_as_prompt 的插件的提示词模板
-     * 用于注入到系统提示词中，让AI主动调用插件工具
+     * 获取插件的提示词注入
+     *
+     * 第一个元素: 自动生成的"插件能力总览"(当存在声明了工具的插件时),
+     *             让模型不仅"看见"插件工具, 还被明确提醒要主动使用.
+     * 后续元素: 各插件 manifest.promptTemplate 中开启了 inject_as_prompt 的模板(保留原机制).
      */
     fun getPluginPromptInjections(): List<String> {
-        return pluginLoader.getAllLoadedPlugins().mapNotNull { plugin ->
+        val pluginsWithTools = pluginLoader.getAllLoadedPlugins()
+            .filter { it.info.manifest.tools.isNotEmpty() }
+
+        val overview = if (pluginsWithTools.isNotEmpty()) {
+            buildString {
+                appendLine("你当前拥有以下插件提供的工具。不要只在用户明确点名某个工具时才使用——只要对话场景与某个工具的用途相关,就应该主动考虑调用它,而不是被动等待用户指示。部分工具绑定的是持续性的人设/系统状态(例如经营、社交、记录类),更需要你自己记得在合适的时机调用,而不是等用户提醒。")
+                appendLine()
+                appendLine("<available_plugins>")
+                pluginsWithTools.forEach { plugin ->
+                    val manifest = plugin.info.manifest
+                    appendLine("  <plugin>")
+                    appendLine("    <name>${manifest.name}</name>")
+                    appendLine("    <description>${manifest.description}</description>")
+                    appendLine("    <tools>")
+                    manifest.tools.forEach { tool ->
+                        appendLine("      <tool>")
+                        appendLine("        <name>${tool.name}</name>")
+                        appendLine("        <description>${tool.description}</description>")
+                        appendLine("      </tool>")
+                    }
+                    appendLine("    </tools>")
+                    appendLine("  </plugin>")
+                }
+                append("</available_plugins>")
+                appendLine()
+            }
+        } else {
+            null
+        }
+
+        val manualTemplates = pluginLoader.getAllLoadedPlugins().mapNotNull { plugin ->
             val manifest = plugin.info.manifest
             val promptTemplate = manifest.promptTemplate ?: return@mapNotNull null
             // 检查 inject_as_prompt 配置是否开启
@@ -149,6 +183,11 @@ class PluginToolProvider(
             }
             if (shouldInject) promptTemplate else null
         }
+
+        return buildList {
+            if (overview != null) add(overview)
+            addAll(manualTemplates)
+        }
     }
 
     /**
@@ -157,7 +196,7 @@ class PluginToolProvider(
     fun getToolStats(): ToolStats {
         val plugins = pluginLoader.getAllLoadedPlugins()
         val totalTools = plugins.sumOf { it.info.manifest.tools.size }
-        
+
         return ToolStats(
             totalPlugins = plugins.size,
             totalTools = totalTools,

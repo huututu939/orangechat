@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
+import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.plugin.provider.PluginToolProvider
@@ -709,7 +710,7 @@ addAll(localTools.getTools(assistant.localTools))
             mcpManager.getAllAvailableTools().forEach { (serverId, tool) ->
                 add(
                     Tool(
-                        name = "mcp__" + tool.name,
+                        name = ToolNaming.buildMcpToolName(serverId, tool.name),
                         description = tool.description ?: "",
                         parameters = { tool.inputSchema },
                         needsApproval = tool.needsApproval,

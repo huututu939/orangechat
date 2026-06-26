@@ -102,6 +102,7 @@ import me.rerere.hugeicons.stroke.Zip02
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.data.ai.tools.ToolNaming
 import me.rerere.rikkahub.data.ai.tools.WriteFilesCache
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
@@ -207,7 +208,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             MemoryActions.CREATE -> stringResource(R.string.chat_message_tool_create_memory)
             MemoryActions.EDIT -> stringResource(R.string.chat_message_tool_edit_memory)
             MemoryActions.DELETE -> stringResource(R.string.chat_message_tool_delete_memory)
-            else -> stringResource(R.string.chat_message_tool_call_generic, tool.toolName)
+            else -> stringResource(R.string.chat_message_tool_call_generic, ToolNaming.toDisplayName(tool.toolName))
         }
 
         ToolNames.SEARCH_WEB -> stringResource(
@@ -220,7 +221,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
         ToolNames.CLIPBOARD -> when (memoryAction) {
             ClipboardActions.READ -> stringResource(R.string.chat_message_tool_clipboard_read)
             ClipboardActions.WRITE -> stringResource(R.string.chat_message_tool_clipboard_write)
-            else -> stringResource(R.string.chat_message_tool_call_generic, tool.toolName)
+            else -> stringResource(R.string.chat_message_tool_call_generic, ToolNaming.toDisplayName(tool.toolName))
         }
 
         ToolNames.TTS -> {
@@ -248,7 +249,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
             }
         }
 
-        else -> stringResource(R.string.chat_message_tool_call_generic, tool.toolName)
+        else -> stringResource(R.string.chat_message_tool_call_generic, ToolNaming.toDisplayName(tool.toolName))
     }
 
     // 判断是否有额外内容需要显示
@@ -517,7 +518,7 @@ fun ChainOfThoughtScope.ChatMessageToolStep(
 
     if (showResult) {
         ToolCallPreviewSheet(
-            toolName = tool.toolName,
+            toolName = ToolNaming.toDisplayName(tool.toolName),
             arguments = arguments,
             content = content,
             output = tool.output,
