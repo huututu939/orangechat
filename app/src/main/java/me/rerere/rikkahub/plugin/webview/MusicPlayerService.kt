@@ -1,4 +1,4 @@
-package me.rerere.rikkahub.plugin.webview
+﻿package me.rerere.rikkahub.plugin.webview
 
 import android.app.PendingIntent
 import android.app.Service
@@ -176,7 +176,15 @@ class MusicPlayerService : Service() {
             currentFilePath = filePath
 
             try {
-                val player = ExoPlayer.Builder(applicationContext).build()
+                val httpFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                    .setUserAgent("Mozilla/5.0")
+                    .setConnectTimeoutMs(15000)
+                    .setReadTimeoutMs(30000)
+                val dataSourceFactory = androidx.media3.datasource.DefaultDataSource.Factory(applicationContext, httpFactory)
+                val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
+                val player = ExoPlayer.Builder(applicationContext)
+                    .setMediaSourceFactory(mediaSourceFactory)
+                    .build()
 
                 val audioAttributes = AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -222,7 +230,12 @@ class MusicPlayerService : Service() {
                     }
                 })
 
-                player.setMediaItem(MediaItem.fromUri(Uri.fromFile(File(filePath))))
+                val mediaUri = if (filePath.startsWith("http://") || filePath.startsWith("https://")) {
+                    Uri.parse(filePath)
+                } else {
+                    Uri.fromFile(File(filePath))
+                }
+                player.setMediaItem(MediaItem.fromUri(mediaUri))
                 player.prepare()
                 player.play()
 

@@ -8,6 +8,13 @@ const CONFIG = {
   supabaseKey: ''
 };
 
+// 当前对话上下文（由 message_sent / message_received 事件自动维护）
+// 这样工具调用时无需 AI 模型提供 conversation_id
+var CURRENT_CONTEXT = {
+  assistant_id: '',
+  conversation_id: ''
+};
+
 // 初始化配置
 function initConfig() {
   CONFIG.supabaseUrl = config.supabase_url || '';
@@ -20,9 +27,12 @@ function supabaseRequest(table, method, data, query) {
   var headers = {
     'apikey': CONFIG.supabaseKey,
     'Authorization': 'Bearer ' + CONFIG.supabaseKey,
-    'Content-Type': 'application/json',
-    'Prefer': method === 'POST' ? 'return=representation' : ''
+    'Content-Type': 'application/json'
   };
+  // 仅 POST 请求发送 Prefer 头，避免空头导致部分服务器拒绝
+  if (method === 'POST') {
+    headers['Prefer'] = 'return=representation';
+  }
 
   var response = fetch(url, {
     method: method,
@@ -31,10 +41,21 @@ function supabaseRequest(table, method, data, query) {
   });
 
   if (!response.ok) {
-    throw new Error('Supabase error: ' + response.status);
+    // 读取并返回 Supabase 的完整错误信息，便于排查
+    var errBody = '';
+    try { errBody = response.text(); } catch (e) {}
+    throw new Error('Supabase error ' + response.status + ': ' + errBody);
   }
 
-  return response.json();
+  // 解析响应，对空响应体做容错
+  var rawBody = '';
+  try { rawBody = response.text(); } catch (e) {}
+  if (!rawBody) return [];
+  try {
+    return JSON.parse(rawBody);
+  } catch (e) {
+    return rawBody;
+  }
 }
 
 // ==================== 事件处理 ====================
@@ -43,13 +64,21 @@ function supabaseRequest(table, method, data, query) {
 function onMessageSent(event) {
   initConfig();
 
+  // 自动维护当前对话上下文
+  if (event.conversation_id) {
+    CURRENT_CONTEXT.conversation_id = event.conversation_id;
+  }
+  if (event.assistant_id) {
+    CURRENT_CONTEXT.assistant_id = event.assistant_id;
+  }
+
   if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
     return;
   }
 
   var message = {
-    assistantId: event.assistant_id,
-    conversationId: event.conversation_id,
+    assistant_id: event.assistant_id,
+    conversation_id: event.conversation_id,
     role: 'user',
     content: event.message,
     created_at: new Date().toISOString()
@@ -66,13 +95,21 @@ function onMessageSent(event) {
 function onMessageReceived(event) {
   initConfig();
 
+  // 自动维护当前对话上下文
+  if (event.conversation_id) {
+    CURRENT_CONTEXT.conversation_id = event.conversation_id;
+  }
+  if (event.assistant_id) {
+    CURRENT_CONTEXT.assistant_id = event.assistant_id;
+  }
+
   if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
     return;
   }
 
   var message = {
-    assistantId: event.assistant_id,
-    conversationId: event.conversation_id,
+    assistant_id: event.assistant_id,
+    conversation_id: event.conversation_id,
     role: 'assistant',
     content: event.message,
     created_at: new Date().toISOString()
@@ -95,9 +132,10 @@ function memory_recall_recent(params) {
     return { success: false, error: 'Supabase not configured' };
   }
 
-  var conversationId = params.conversation_id;
+  // 优先使用 AI 传入的 conversation_id，否则使用自动维护的当前对话上下文
+  var conversationId = params.conversation_id || CURRENT_CONTEXT.conversation_id;
   if (!conversationId) {
-    return { success: false, error: 'conversation_id is required' };
+    return { success: false, error: 'conversation_id is required (no active conversation context available)' };
   }
 
   try {
@@ -129,7 +167,8 @@ function memory_search(params) {
   }
 
   var query = params.query || '';
-  var conversationId = params.conversation_id;
+  // 优先使用 AI 传入的 conversation_id，否则使用自动维护的当前对话上下文
+  var conversationId = params.conversation_id || CURRENT_CONTEXT.conversation_id;
   var limit = params.limit || 20;
 
   if (!query) {
@@ -167,8 +206,9 @@ function memory_write(params) {
   }
 
   var content = params.content;
-  var assistantId = params.assistant_id;
-  var conversationId = params.conversation_id;
+  // 优先使用 AI 传入的 ID，否则使用自动维护的当前对话上下文
+  var assistantId = params.assistant_id || CURRENT_CONTEXT.assistant_id;
+  var conversationId = params.conversation_id || CURRENT_CONTEXT.conversation_id;
 
   if (!content) {
     return { success: false, error: 'content is required' };
@@ -176,8 +216,8 @@ function memory_write(params) {
 
   try {
     var message = {
-      assistantId: assistantId || 'manual',
-      conversationId: conversationId || 'manual',
+      assistant_id: assistantId || 'manual',
+      conversation_id: conversationId || 'manual',
       role: 'system',
       content: content,
       created_at: new Date().toISOString()

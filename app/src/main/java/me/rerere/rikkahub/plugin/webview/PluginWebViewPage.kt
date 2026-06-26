@@ -61,6 +61,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
@@ -71,6 +72,7 @@ import me.rerere.rikkahub.plugin.manager.PluginManager
 import me.rerere.rikkahub.plugin.model.PluginHookConfig
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.repository.PluginRepository
+import me.rerere.rikkahub.data.repository.MemoryRepository
 import org.json.JSONArray
 import org.json.JSONObject
 import org.koin.compose.koinInject
@@ -650,12 +652,42 @@ fun PluginWebViewPage(
                                                                         """{"success":false,"error":"Provider not found"}"""
                                                                     } else {
                                                                         val providerImpl = providerManager.getProviderByType(providerSetting)
-                                                                        val systemPrompt = "你是一个番茄钟陪伴助手。用户正在使用番茄钟专注。请用简短温暖的话回应，鼓励用户保持专注。当前上下文：$contextJson"
+                                                                        val assistant = settings.getCurrentAssistant()
+                                                                        val memoryRepository: MemoryRepository = org.koin.java.KoinJavaComponent.get(MemoryRepository::class.java)
+                                                                        val systemPrompt = buildString {
+                                                                            val basePrompt = assistant.systemPrompt.trim()
+                                                                            if (basePrompt.isNotEmpty()) append(basePrompt)
+                                                                            else append("\u4F60\u662F\u4E00\u4E2A\u756A\u8304\u949F\u966A\u4F34\u52A9\u624B\u3002\u7528\u6237\u6B63\u5728\u4E13\u6CE8\uFF0C\u8BF7\u7528\u7B80\u77ED\u6E29\u6696\u7684\u8BDD\u56DE\u5E94\uFF0C\u9F13\u52B1\u4FDD\u6301\u4E13\u6CE8\u3002")
+                                                                            try {
+                                                                                val memories = if (assistant.useGlobalMemory) memoryRepository.getGlobalMemories() else memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
+                                                                                if (memories.isNotEmpty()) {
+                                                                                    val mt = memories.joinToString("\n") { it.content.trim().replace("\n", " ") }.trim()
+                                                                                    if (mt.isNotEmpty()) append("\n\n<memory>\n").append(mt).append("\n</memory>")
+                                                                                }
+                                                                            } catch (ex: Exception) {
+                                                                                Log.w(TAG, "Failed to load assistant memories (overlay)", ex)
+                                                                            }
+                                                                            if (contextJson.isNotBlank() && contextJson != "{}") {
+                                                                                try {
+                                                                                    val ctx = JSONObject(contextJson)
+                                                                                    if (ctx.length() > 0) {
+                                                                                        append("\n\n\u4E0A\u4E0B\u6587\uFF1A")
+                                                                                        val ks = ctx.keys()
+                                                                                        while (ks.hasNext()) {
+                                                                                            val kk = ks.next()
+                                                                                            append("\n").append(kk).append("\uFF1A").append(ctx.optString(kk))
+                                                                                        }
+                                                                                    }
+                                                                                } catch (ex: Exception) {
+                                                                                    Log.w(TAG, "Failed to parse context JSON (overlay)", ex)
+                                                                                }
+                                                                            }
+                                                                        }
                                                                         val messages = listOf(
                                                                             UIMessage(role = MessageRole.SYSTEM, parts = listOf(UIMessagePart.Text(systemPrompt))),
                                                                             UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Text(prompt)))
                                                                         )
-                                                                        val textGenParams = TextGenerationParams(model = model, tools = emptyList(), temperature = 0.7f)
+                                                                        val textGenParams = TextGenerationParams(model = model, tools = emptyList(), temperature = assistant.temperature ?: 0.7f)
                                                                         val response = providerImpl.generateText(providerSetting, messages, textGenParams)
                                                                         val responseText = response.choices.firstOrNull()?.message?.parts
                                                                             ?.filterIsInstance<UIMessagePart.Text>()
@@ -1291,7 +1323,9 @@ private class PluginWebViewClient(
     private suspend fun callAI(prompt: String, contextJson: String): String {
         val settingsStore: SettingsStore = org.koin.java.KoinJavaComponent.get(SettingsStore::class.java)
         val providerManager: ProviderManager = org.koin.java.KoinJavaComponent.get(ProviderManager::class.java)
+        val memoryRepository: MemoryRepository = org.koin.java.KoinJavaComponent.get(MemoryRepository::class.java)
         val settings = settingsStore.settingsFlow.first()
+        val assistant = settings.getCurrentAssistant()
         val model = settings.getCurrentChatModel()
             ?: return """{"success":false,"error":"No chat model configured"}"""
         val providerSetting = model.findProvider(settings.providers)
@@ -1299,19 +1333,46 @@ private class PluginWebViewClient(
 
         val providerImpl = providerManager.getProviderByType(providerSetting)
 
+        // 使用当前助手的人设作为 systemPrompt；为空则保留兜底默认提示
         val systemPrompt = buildString {
-            append("\u4F60\u662F\u4E00\u4E2A\u9605\u8BFB\u52A9\u624B\u3002\u8BF7\u6839\u636E\u7528\u6237\u7684\u95EE\u9898\u7ED9\u51FA\u6709\u6DF1\u5EA6\u7684\u3001\u6E29\u67D4\u7684\u56DE\u7B54\u3002")
+            val basePrompt = assistant.systemPrompt.trim()
+            if (basePrompt.isNotEmpty()) {
+                append(basePrompt)
+            } else {
+                append("\u4F60\u662F\u4E00\u4E2A\u53CB\u5584\u7684\u52A9\u624B\u3002\u8BF7\u6839\u636E\u7528\u6237\u7684\u8F93\u5165\u7ED9\u51FA\u6709\u7528\u3001\u81EA\u7136\u7684\u56DE\u7B54\u3002")
+            }
+
+            // 注入当前助手记忆（全局或助手隔离，与主聊天一致）
+            try {
+                val memories = if (assistant.useGlobalMemory) {
+                    memoryRepository.getGlobalMemories()
+                } else {
+                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
+                }
+                if (memories.isNotEmpty()) {
+                    val memoryText = memories.joinToString("\n") { m ->
+                        m.content.trim().replace("\n", " ")
+                    }.trim()
+                    if (memoryText.isNotEmpty()) {
+                        append("\n\n<memory>\n").append(memoryText).append("\n</memory>")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load assistant memories", e)
+            }
+
+            // 兼容各插件传入的 context 字段（如 book/chapter/quote/mode/history 等）
             if (contextJson.isNotBlank() && contextJson != "{}") {
                 try {
                     val ctx = JSONObject(contextJson)
-                    append("\n\n\u5F53\u524D\u9605\u8BFB\u4E0A\u4E0B\u6587\uFF1A")
-                    if (ctx.has("book")) append("\n\u4E66\u540D\uFF1A").append(ctx.getString("book"))
-                    if (ctx.has("chapter")) append("\n\u7AE0\u8282\uFF1A\u7B2C").append(ctx.getString("chapter")).append("\u7AE0")
-                    if (ctx.has("page")) append("\n\u9875\u7801\uFF1A\u7B2C").append(ctx.getString("page")).append("\u9875")
-                    if (ctx.has("annotations")) append("\n\u5DF2\u6709\u6279\u6CE8\uFF1A").append(ctx.getString("annotations"))
-                    if (ctx.has("content")) append("\n\u9875\u9762\u5185\u5BB9\uFF1A").append(ctx.getString("content"))
-                    if (ctx.has("quote")) append("\n\u5F15\u7528\u539F\u6587\uFF1A").append(ctx.getString("quote"))
-                    if (ctx.has("note")) append("\n\u7528\u6237\u6279\u6CE8\uFF1A").append(ctx.getString("note"))
+                    if (ctx.length() > 0) {
+                        append("\n\n\u63D2\u4EF6\u4E0A\u4E0B\u6587\uFF1A")
+                        val keys = ctx.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            append("\n").append(k).append("\uFF1A").append(ctx.optString(k))
+                        }
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to parse context JSON", e)
                 }
@@ -1332,7 +1393,7 @@ private class PluginWebViewClient(
         val textGenParams = TextGenerationParams(
             model = model,
             tools = emptyList(),
-            temperature = 0.7f
+            temperature = assistant.temperature ?: 0.7f
         )
 
         return try {

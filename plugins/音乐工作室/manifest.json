@@ -1,0 +1,114 @@
+{
+  "id": "com.orangechat.plugin.music_studio",
+  "name": "音乐工作室",
+  "description": "AI 音乐工作室：用 Suno 生成原创歌曲，用 Replicate RVC 替换音色，打造专属音乐库",
+  "version": "1.0.0",
+  "author": "OrangeChat",
+  "icon": "🎸",
+  "entry": "main.js",
+  "permissions": ["ai_chat"],
+  "customPageWebView": {
+    "entry": "ui/index.html"
+  },
+  "config": [
+    {
+      "name": "suno_api_url",
+      "type": "string",
+      "label": "Suno API 代理地址",
+      "description": "Suno 音乐生成代理 API 的基础地址",
+      "required": true,
+      "placeholder": "https://your-suno-proxy.com"
+    },
+    {
+      "name": "suno_api_key",
+      "type": "password",
+      "label": "Suno API Key",
+      "description": "Suno 平台的 API 密钥",
+      "required": true,
+      "placeholder": "sk-..."
+    },
+    {
+      "name": "replicate_api_key",
+      "type": "password",
+      "label": "Replicate API Key",
+      "description": "Replicate 平台的 API 密钥（用于 RVC 音色替换）",
+      "required": false,
+      "placeholder": "r8_..."
+    },
+    {
+      "name": "voice_model_url",
+      "type": "string",
+      "label": "RVC 音色模型链接",
+      "description": "声音模型 zip 直链（HuggingFace 等）。留空则跳过音色替换，直接返回 Suno 原始音频",
+      "required": false,
+      "placeholder": "https://huggingface.co/.../your_voice.zip"
+    }
+  ],
+  "tools": [
+    {
+      "name": "generate_song",
+      "description": "【AI写歌】根据歌词和风格描述生成一首完整的歌曲。流程：Suno生成基础歌曲 → (可选)Replicate RVC替换为自定义音色 → 存入音乐库。生成过程需要3-8分钟，请耐心等待",
+      "parameters": [
+        {
+          "name": "lyrics",
+          "type": "string",
+          "required": true,
+          "description": "歌词内容，支持 [Verse]/[Chorus] 等段落标签，最多3000字符"
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "required": true,
+          "description": "歌曲名称"
+        },
+        {
+          "name": "style",
+          "type": "string",
+          "required": false,
+          "description": "音乐风格提示词，如 'pop, upbeat, female vocal' 或 'lofi, chill, instrumental'"
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "required": false,
+          "description": "Suno 模型：chirp-v4(默认)"
+        }
+      ]
+    },
+    {
+      "name": "cover_song",
+      "description": "【AI翻唱】对已有的歌曲音频链接进行RVC音色替换翻唱。需要配置 Replicate API Key 和音色模型链接",
+      "parameters": [
+        {
+          "name": "song_url",
+          "type": "string",
+          "required": true,
+          "description": "原唱音频直链 URL（mp3/wav 等）"
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "required": true,
+          "description": "翻唱歌曲名称"
+        }
+      ]
+    },
+    {
+      "name": "list_studio_songs",
+      "description": "列出音乐工作室中所有已生成的歌曲",
+      "parameters": []
+    },
+    {
+      "name": "delete_studio_song",
+      "description": "从音乐库中删除指定歌曲",
+      "parameters": [
+        {
+          "name": "title",
+          "type": "string",
+          "required": true,
+          "description": "要删除的歌曲名称"
+        }
+      ]
+    }
+  ]
+}

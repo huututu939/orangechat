@@ -1,0 +1,88 @@
+{
+  "id": "com.orangechat.plugin.voiceroom",
+  "name": "语音聊天室",
+  "description": "专属语音聊天室，支持 TTS 语音播放，兼容 ElevenLabs / OpenAI / MiniMax",
+  "version": "1.0.0",
+  "author": "OrangeChat",
+  "icon": "🎙️",
+  "entry": "main.js",
+  "customPageWebView": {
+    "entry": "ui/index.html"
+  },
+  "config": [
+    {
+      "name": "user_name",
+      "type": "string",
+      "label": "用户昵称",
+      "description": "你在聊天室中显示的昵称",
+      "required": false,
+      "placeholder": "小猫"
+    },
+    {
+      "name": "ai_name",
+      "type": "string",
+      "label": "AI 昵称",
+      "description": "AI 在聊天室中显示的昵称",
+      "required": false,
+      "placeholder": "知厌"
+    },
+    {
+      "name": "supabase_url",
+      "type": "string",
+      "label": "Supabase URL",
+      "description": "Supabase 项目地址。\n\n① SQL Editor 执行：\ncreate table voice_messages (\n  id uuid default gen_random_uuid() primary key,\n  sender text not null,\n  sender_name text not null,\n  text_content text not null,\n  audio_url text,\n  created_at timestamptz default now()\n);\nalter table voice_messages enable row level security;\ncreate policy \"allow_all\" on voice_messages for all using (true) with check (true);\ncreate policy \"voice_audio_insert\" on storage.objects for insert with check (bucket_id = 'voice-audio');\ncreate policy \"voice_audio_select\" on storage.objects for select using (bucket_id = 'voice-audio');\ncreate policy \"voice_audio_update\" on storage.objects for update using (bucket_id = 'voice-audio');\n\n② Storage → 新建 bucket，名称填 voice-audio，设为 Public。",
+      "required": true,
+      "placeholder": "https://xxx.supabase.co"
+    },
+    {
+      "name": "supabase_key",
+      "type": "password",
+      "label": "Supabase API Key",
+      "description": "Supabase 项目的 anon/public key",
+      "required": true,
+      "placeholder": "eyJhbGciOiJIUzI1NiIs..."
+    },
+    {
+      "name": "tts_provider",
+      "type": "string",
+      "label": "TTS 服务商",
+      "description": "填写 elevenlabs、openai 或 minimax，不填则 AI 回复仅显示文字",
+      "required": false,
+      "placeholder": "elevenlabs"
+    },
+    {
+      "name": "tts_key",
+      "type": "string",
+      "label": "TTS API Key",
+      "description": "TTS 服务的 API 密钥",
+      "required": false,
+      "placeholder": "..."
+    },
+    {
+      "name": "tts_voice_id",
+      "type": "string",
+      "label": "TTS 音色 ID",
+      "description": "ElevenLabs 填 voice_id；OpenAI 填 alloy/nova/echo 等；MiniMax 填 voice_id",
+      "required": false,
+      "placeholder": "..."
+    },
+    {
+      "name": "tts_model",
+      "type": "string",
+      "label": "TTS 模型",
+      "description": "OpenAI 填 tts-1 或 tts-1-hd；MiniMax 填 speech-02-turbo 等；ElevenLabs 可留空",
+      "required": false,
+      "placeholder": "tts-1"
+    }
+  ],
+  "tools": [
+    {
+      "name": "open_voice_room",
+      "description": "打开语音聊天室界面。当用户想进行语音对话、想打开聊天室、想和 AI 以语音方式交流时，调用此工具提示用户进入。",
+      "parameters": []
+    }
+  ],
+  "permissions": [
+    "ai_chat"
+  ]
+}

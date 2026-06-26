@@ -173,6 +173,31 @@ var exports = {};
 var __nativeFetch = null;
 var __memoryBankBridge = null;
 var __dataStoreBridge = null;
+var __sleepBridge = null;
+
+// setTimeout / setInterval polyfill
+// 沙箱无事件循环，这里采用「同步阻塞 + 立即执行」语义：
+// setTimeout(fn, ms) 会同步阻塞 ms 毫秒后执行 fn()，返回假 id。
+// 这使得 new Promise(resolve => setTimeout(resolve, ms)) 能正常工作。
+var __timerSeq = 0;
+function setTimeout(fn, ms) {
+    var delay = (typeof ms === 'number' && ms > 0) ? ms : 0;
+    if (__sleepBridge) {
+        try { __sleepBridge(delay); } catch (e) {}
+    }
+    try {
+        if (typeof fn === 'function') fn();
+    } catch (e) {
+        console.error('setTimeout callback error: ' + (e && e.message ? e.message : String(e)));
+    }
+    return ++__timerSeq;
+}
+function clearTimeout(id) { /* no-op: 同步定时器无法取消 */ }
+function setInterval(fn, ms) {
+    console.warn('setInterval is not supported in plugin sandbox (no event loop); running once');
+    return setTimeout(fn, ms);
+}
+function clearInterval(id) { /* no-op */ }
  
 // musicPlayer 桥接对象 - 插件可直接调用
 var __musicPlayerBridge = null;
@@ -261,7 +286,7 @@ function fetch(url, options) {
                     nativeFetch(url, optionsJson)
                 } catch (e: Exception) {
                     Log.e(TAG, "Native fetch error: url=$url", e)
-                    """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
+                    """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
                 }
             })
  
@@ -273,7 +298,7 @@ function fetch(url, options) {
                     nativeMemoryBankBridge(action, paramsJson)
                 } catch (e: Exception) {
                     Log.e(TAG, "MemoryBank bridge error: action=$action", e)
-                    """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
+                    """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
                 }
             })
  
@@ -285,7 +310,7 @@ function fetch(url, options) {
                     nativeMusicPlayerBridge(action, paramsJson)
                 } catch (e: Exception) {
                     Log.e(TAG, "MusicPlayer bridge error: action=$action", e)
-                    """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
+                    """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
                 }
             })
 
@@ -297,8 +322,22 @@ function fetch(url, options) {
                     nativeDataStoreBridge(action, paramsJson)
                 } catch (e: Exception) {
                     Log.e(TAG, "DataStore bridge error: action=$action, params=$paramsJson", e)
-                    """{"success":false,"error":"${e.message?.replace("\"", "\\\"")}"}"""
+                    """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
                 }
+            })
+
+            // 注入 sleep 桥接（供 setTimeout polyfill 使用）
+            getGlobalObject().setProperty("__sleepBridge", JSCallFunction { args ->
+                val ms = (args.getOrNull(0) as? Number)?.toLong() ?: 0L
+                try {
+                    nativeSleepBridge(ms)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    Log.w(TAG, "Sleep bridge interrupted", e)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Sleep bridge error: ms=$ms", e)
+                }
+                ""
             })
 
         }
@@ -368,7 +407,7 @@ function fetch(url, options) {
             result
         } catch (e: Exception) {
             Log.e(TAG, "nativeFetch failed: url=$url", e)
-            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
+            """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
         }
     }
  
@@ -416,7 +455,7 @@ function fetch(url, options) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "MusicPlayer bridge action='$action' failed", e)
-            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
+            """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
         }
     }
 
@@ -470,10 +509,23 @@ function fetch(url, options) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "DataStore bridge action='$action' failed, params=$paramsJson", e)
-            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
+            """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
         }
     }
  
+    /**
+     * Sleep 桥接 - 同步阻塞当前线程指定毫秒数
+     * 用于 setTimeout polyfill，与沙箱「同步阻塞执行」模型一致
+     */
+    private fun nativeSleepBridge(ms: Long) {
+        if (ms <= 0) return
+        try {
+            Thread.sleep(ms)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
     /**
      * 执行 JS 文件
      */
@@ -696,7 +748,7 @@ function fetch(url, options) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "MemoryBank bridge action='$action' failed", e)
-            """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
+            """{"success":false,"error":${escapeJson(e.message ?: "Unknown error")}}"""
         }
     }
  
