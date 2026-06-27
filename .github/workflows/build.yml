@@ -19,12 +19,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Fix MNN submodule URL (SSH → HTTPS)
-        run: |
-          git config submodule.ai/src/main/cpp/mnn.url https://github.com/alibaba/MNN.git
-          git submodule sync
-          git submodule update --init --recursive --depth 1 2>&1 || echo "Submodule update failed, continuing without MNN"
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:

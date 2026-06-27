@@ -1,0 +1,3 @@
+git: 'credential-manager-core' is not a git command. See 'git --help'.
+To https://github.com/huututu939/orangechat.git
+   32444e35..2e3357c2  master -> master
