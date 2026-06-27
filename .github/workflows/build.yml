@@ -10,12 +10,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: /opt/android-sdk
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 1
 
       - name: Set up JDK 17
@@ -25,13 +26,32 @@ jobs:
           java-version: 17
           cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android-sdk@v3
-        with:
-          accept-android-sdk-licenses: true
-          build-tools-version: 35.0.0
-          platform-version: 37
-          ndk-version: 27.0.12077973
+      - name: Download Android command-line tools
+        run: |
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          cd $ANDROID_SDK_ROOT/cmdline-tools
+          curl -fsSL -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+          unzip -q cmdline-tools.zip
+          rm cmdline-tools.zip
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
+          mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/ 2>/dev/null || true
+          chmod +x $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/*
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+
+      - name: Accept SDK licenses
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
+
+      - name: Install Android SDK components
+        run: |
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
+            --no_https \
+            "platforms;android-37" \
+            "build-tools;35.0.0" \
+            "platform-tools" \
+            2>&1 | tail -20
 
       - name: Cache Gradle packages
         uses: actions/cache@v4
@@ -47,13 +67,10 @@ jobs:
         run: chmod +x gradlew
 
       - name: Create local.properties
-        run: echo "sdk.dir=${{ env.ANDROID_HOME }}" > local.properties
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          JAVA_HOME: ${{ env.JAVA_HOME }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
