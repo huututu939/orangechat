@@ -69,11 +69,14 @@ jobs:
       - name: Create local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      - name: Clear Gradle configuration cache
-        run: rm -rf .gradle/8.0-build-cache 2>/dev/null; rm -rf .gradle/build-cache-* 2>/dev/null; rm -rf ~/.gradle/caches/build-cache-* 2>/dev/null; echo "Cache cleared"
+      - name: Clear Gradle caches
+        run: rm -rf .gradle 2>/dev/null; rm -rf ~/.gradle/caches 2>/dev/null; echo "Caches cleared"
+
+      - name: Diagnostic - print version catalog
+        run: cat gradle/libs.versions.toml | grep ksp; grep ksp build.gradle.kts; ls .gradle/ 2>/dev/null || echo "no .gradle"
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace --no-configuration-cache
+        run: ./gradlew assembleDebug --no-daemon --stacktrace --no-configuration-cache --stop
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
