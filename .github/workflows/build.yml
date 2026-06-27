@@ -72,8 +72,18 @@ jobs:
       - name: Clear Gradle caches
         run: rm -rf .gradle 2>/dev/null; rm -rf ~/.gradle/caches 2>/dev/null; echo "Caches cleared"
 
-      - name: Diagnostic - print version catalog
-        run: cat gradle/libs.versions.toml | grep ksp; grep ksp build.gradle.kts; ls .gradle/ 2>/dev/null || echo "no .gradle"
+      - name: Diagnostic - verify commit and KSP version
+        run: |
+          echo "=== GIT COMMIT ==="
+          git log --oneline -3
+          echo "=== KSP in libs.versions.toml ==="
+          grep ksp gradle/libs.versions.toml
+          echo "=== KSP in build.gradle.kts ==="
+          grep -n ksp build.gradle.kts
+          echo "=== .gradle dir ==="
+          ls -la .gradle/ 2>/dev/null || echo "no .gradle dir"
+          echo "=== ~/.gradle/caches ==="
+          ls ~/.gradle/caches/ 2>/dev/null || echo "no caches dir"
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace --no-configuration-cache --stop
